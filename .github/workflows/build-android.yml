@@ -1,4 +1,4 @@
-name: Build Android APK (manual Flutter)
+name: Build Android APK (Flet)
 
 on:
   workflow_dispatch:
@@ -6,8 +6,11 @@ on:
     branches: [ main ]
 
 jobs:
-  build-apk:
+  android-apk:
     runs-on: ubuntu-latest
+
+    env:
+      SERIOUS_PYTHON_SITE_PACKAGES: ${{ github.workspace }}/build/site-packages
 
     steps:
       - name: Checkout
@@ -17,68 +20,55 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
 
-      - name: Create app.zip and site-packages
+      - name: Install Python deps + site-packages
         run: |
-          set -eux
-          mkdir -p build/app build/site-packages
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          mkdir -p build/site-packages
           if [ -f requirements.txt ]; then pip install -r requirements.txt -t build/site-packages; fi
-          pip install flet==0.28.3 -t build/site-packages
-          zip -r build/app/app.zip . -x "build/*" ".git/*" ".github/*" "__pycache__/*" "*.pyc" "venv/*" ".venv/*"
-          python - <<'PY'
-          import hashlib, pathlib
-          p=pathlib.Path("build/app/app.zip")
-          h=hashlib.sha256(p.read_bytes()).hexdigest()
-          pathlib.Path("build/app/app.zip.hash").write_text(h)
-          print("sha256:", h)
-          PY
-          ls -la build/app
-          ls -la build/site-packages | head
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
+      # Renderiza el template de Flet 0.28.3 (aquí aparece pubspec.yaml)
+      - name: Render Flet Flutter bootstrap (0.28.3)
+        run: |
+          pip install cookiecutter
+          rm -rf build/flutter build/flet_bootstrap
+          cookiecutter --no-input --checkout 0.28.3 -o build https://github.com/flet-dev/flet-build-template.git
+          FLUTTER_DIR="$(dirname "$(find build -type f -name pubspec.yaml | head -n1)")"
+          echo "Template renderizado en: $FLUTTER_DIR"
+          test -f "$FLUTTER_DIR/pubspec.yaml"
+          rm -rf build/flutter
+          mv "$FLUTTER_DIR" build/flutter
+          mkdir -p build/flutter/app
+
+      - name: Package Python app (app.zip)
+        run: |
+          zip -r build/flutter/app/app.zip . -x ".git/*" ".github/*" "build/*" "__pycache__/*" "*.pyc" ".venv/*"
+          shasum -a 256 build/flutter/app/app.zip | awk '{print $1}' > build/flutter/app/app.zip.hash
+          ls -lh build/flutter/app/app.zip build/flutter/app/app.zip.hash
 
       - name: Setup Flutter 3.35.6
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.35.6'
-          channel: stable
+          channel: 'stable'
           cache: true
 
-      # 👇 INSTALA ANDROID SDK + cmdline-tools (proporciona sdkmanager)
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Fetch Flet Flutter template
-        run: |
-          git clone --depth 1 --branch 0.28.3 https://github.com/flet-dev/flet-build-template.git build/flutter
-          sed -n '1,120p' build/flutter/pubspec.yaml
-
-      # (Opcional) Si volvieras a ver error de Dart/webview, descomenta:
-      # - name: Pin webview version (optional)
-      #   run: |
-      #     cd build/flutter
-      #     printf "\n\ndependency_overrides:\n  webview_flutter_android: 4.8.0\n" >> pubspec.yaml
-      #     cat pubspec.yaml
-
       - name: Flutter pub get
+        working-directory: build/flutter
         run: |
-          cd build/flutter
+          flutter --version
           flutter pub get
 
       - name: Build APK (release)
+        working-directory: build/flutter
         env:
-          SERIOUS_PYTHON_SITE_PACKAGES: ${{ github.workspace }}/build/site-packages
+          SERIOUS_PYTHON_SITE_PACKAGES: ${{ env.SERIOUS_PYTHON_SITE_PACKAGES }}
         run: |
-          cd build/flutter
           flutter build apk --release
           ls -la build/app/outputs/flutter-apk
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
