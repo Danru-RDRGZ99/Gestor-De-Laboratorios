@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Necesario para serious_python en Android
+      # Necesario por el plugin serious_python en Android
       SERIOUS_PYTHON_SITE_PACKAGES: ${{ github.workspace }}/build/site-packages
 
     steps:
@@ -29,18 +29,21 @@ jobs:
           mkdir -p build/site-packages
           if [ -f requirements.txt ]; then pip install -r requirements.txt -t build/site-packages; fi
 
-      # Renderizar el template de Flet en un directorio TEMPORAL y luego moverlo
+      # Renderizamos el bootstrap de Flet 0.28.3 en /tmp/<algo>/flutter y lo movemos a build/flutter
       - name: Render Flet Flutter bootstrap (0.28.3)
         run: |
           pip install cookiecutter
           rm -rf build/flutter
           TMPDIR="$(mktemp -d)"
-          cookiecutter --no-input --checkout 0.28.3 -o "$TMPDIR" https://github.com/flet-dev/flet-build-template.git
-          FLUTTER_DIR="$(dirname "$(find "$TMPDIR" -type f -name pubspec.yaml | head -n1)")"
-          echo "Template renderizado en: $FLUTTER_DIR"
-          test -f "$FLUTTER_DIR/pubspec.yaml"
+          cookiecutter \
+            --no-input \
+            --checkout 0.28.3 \
+            --output-dir "$TMPDIR" \
+            --extra-context '{"out_dir":"flutter"}' \
+            https://github.com/flet-dev/flet-build-template.git
+          test -f "$TMPDIR/flutter/pubspec.yaml"
           mkdir -p build
-          mv "$FLUTTER_DIR" build/flutter
+          mv "$TMPDIR/flutter" build/flutter
           mkdir -p build/flutter/app
 
       - name: Package Python app (app.zip)
@@ -62,8 +65,7 @@ jobs:
           flutter --version
           flutter pub get
 
-      # (Opcional) aceptar licencias si están disponibles en el runner
-      - name: Accept Android SDK licenses
+      - name: Accept Android SDK licenses (best-effort)
         run: |
           if [ -n "$ANDROID_SDK_ROOT" ] && [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
             yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses || true
