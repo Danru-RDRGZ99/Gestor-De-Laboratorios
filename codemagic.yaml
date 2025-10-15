@@ -1,7 +1,6 @@
 workflows:
   flet_apk:
     name: Flet APK
-    instance_type: linux
     max_build_duration: 60
 
     environment:
@@ -9,47 +8,48 @@ workflows:
       vars:
         SERIOUS_PYTHON_SITE_PACKAGES: $CM_BUILD_DIR/build/site-packages
 
-    cache:
-      cache_paths:
-        - $FLUTTER_ROOT/.pub-cache
-
     scripts:
+      # 1) Python + deps y site-packages (para serious_python)
       - name: Setup Python & deps
         script: |
           python3 -m pip install --upgrade pip
           if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt; fi
           mkdir -p build/site-packages
           if [ -f requirements.txt ]; then python3 -m pip install -r requirements.txt -t build/site-packages; fi
-          python3 -m pip install cookiecutter
 
-      - name: Render Flet Flutter bootstrap (0.28.3)
+      # 2) Bootstrap Flutter (plantilla Flet 0.28.3)
+      - name: Fetch Flet Flutter bootstrap (0.28.3)
         script: |
-          rm -rf build/flutter build/flet-template
-          git clone --depth 1 --branch 0.28.3 https://github.com/flet-dev/flet-build-template.git build/flet-template
-          cookiecutter --no-input --output-dir build build/flet-template \
-            --extra-context '{
-              "out_dir": "flutter",
-              "app_name": "Gestor De Laboratorios",
-              "org_name": "Danru",
-              "org_domain": "example.com",
-              "description": "Gestor de Laboratorios (Flet)"
-            }'
+          rm -rf build/flutter
+          git clone --depth 1 --branch 0.28.3 https://github.com/flet-dev/flet-build-template.git build/flutter
+          echo "Contenido de build/flutter:"
           ls -la build/flutter
           test -f build/flutter/pubspec.yaml
           mkdir -p build/flutter/app
 
+      # 3) Empaquetar tu app Python en app.zip (+ hash)
       - name: Package Python app
         script: |
           zip -r build/flutter/app/app.zip . -x ".git/*" ".github/*" "build/*" "__pycache__/*" "*.pyc" ".venv/*"
-          (command -v shasum >/dev/null 2>&1 && shasum -a 256 build/flutter/app/app.zip | awk '{print $1}' > build/flutter/app/app.zip.hash) || \
-          (sha256sum build/flutter/app/app.zip | awk '{print $1}' > build/flutter/app/app.zip.hash)
+          shasum -a 256 build/flutter/app/app.zip | awk '{print $1}' > build/flutter/app/app.zip.hash
           ls -lh build/flutter/app/app.zip build/flutter/app/app.zip.hash
 
+      # 4) Dependencias Flutter
       - name: Flutter pub get
         working_directory: build/flutter
         script: |
+          pwd
+          ls -la
           flutter pub get
 
+      # (Opcional) Aceptar licencias Android si el builder lo requiere
+      - name: Accept Android SDK licenses
+        script: |
+          if [ -n "$ANDROID_SDK_ROOT" ] && [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          fi
+
+      # 5) Build APK
       - name: Build APK (release)
         working_directory: build/flutter
         script: |
