@@ -1,0 +1,5 @@
+flet
+sqlalchemy
+pg8000
+python-dotenv
+bcrypt
