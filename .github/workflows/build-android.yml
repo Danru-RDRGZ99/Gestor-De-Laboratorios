@@ -1,4 +1,4 @@
-name: Build Android APK (Flet manual)
+name: Build Android APK (manual Flutter)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     branches: [ main ]
 
 jobs:
-  android-apk:
+  build-apk:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,64 +19,67 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install Python deps
+      - name: Create app.zip and site-packages
         run: |
-          python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          pip install flet==0.28.3
-
-      # Solo usamos "flet build apk" para EMPAQUETAR la app Python (crear build/app/app.zip y build/site-packages).
-      # Si no se genera app.zip, fallamos.
-      - name: Package Python app with Flet (only assets)
-        run: |
-          set -e
-          flet build apk || true
-          test -f build/app/app.zip
-
-      - name: List packaged assets
-        run: |
-          ls -la build/app || true
-          ls -la build/site-packages || true
+          set -eux
+          mkdir -p build/app build/site-packages
+          # Instala dependencias de tu app en site-packages + el runtime de Flet
+          if [ -f requirements.txt ]; then pip install -r requirements.txt -t build/site-packages; fi
+          pip install flet==0.28.3 -t build/site-packages
+          # Empaqueta el código Python
+          zip -r build/app/app.zip . -x "build/*" ".git/*" ".github/*" "__pycache__/*" "*.pyc" "venv/*" ".venv/*"
+          python - <<'PY'
+          import hashlib, pathlib
+          p=pathlib.Path("build/app/app.zip")
+          h=hashlib.sha256(p.read_bytes()).hexdigest()
+          pathlib.Path("build/app/app.zip.hash").write_text(h)
+          print("sha256:", h)
+          PY
+          ls -la build/app
+          ls -la build/site-packages | head
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
 
-      - name: Setup Flutter
+      - name: Setup Flutter 3.35.6
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.35.6'
-          channel: 'stable'
+          channel: stable
           cache: true
 
       - name: Accept Android licenses
         run: yes | sdkmanager --licenses
 
-      # Parchea pubspec del bootstrap por si el template trae webview incompatible.
-      - name: Patch pubspec (dependency_overrides)
-        shell: bash
+      - name: Fetch Flet Flutter template
+        run: |
+          git clone --depth 1 --branch 0.28.3 https://github.com/flet-dev/flet-build-template.git build/flutter
+          sed -n '1,120p' build/flutter/pubspec.yaml
+
+      # Si AÚN vieras error de webview/dart, descomenta este bloque para fijar una versión compatible:
+      # - name: Pin webview version (optional)
+      #   run: |
+      #     cd build/flutter
+      #     printf "\n\ndependency_overrides:\n  webview_flutter_android: 4.8.0\n" >> pubspec.yaml
+      #     cat pubspec.yaml
+
+      - name: Flutter pub get
         run: |
           cd build/flutter
-          if ! grep -q "^dependency_overrides:" pubspec.yaml; then
-            printf "\n\ndependency_overrides:\n  webview_flutter_android: 4.8.0\n  wakelock_plus: ^1.2.10\n  web: ^1.0.0\n" >> pubspec.yaml
-          else
-            sed -i 's/webview_flutter_android: .*/webview_flutter_android: 4.8.0/' pubspec.yaml || true
-          fi
-          echo "==== pubspec.yaml ===="
-          cat pubspec.yaml
+          flutter pub get
 
       - name: Build APK (release)
         env:
           SERIOUS_PYTHON_SITE_PACKAGES: ${{ github.workspace }}/build/site-packages
         run: |
           cd build/flutter
-          flutter clean
-          flutter pub get
           flutter build apk --release
+          ls -la build/app/outputs/flutter-apk
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
