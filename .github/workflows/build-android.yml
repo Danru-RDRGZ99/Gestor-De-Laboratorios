@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      # Para serious_python (Flet nativo)
       SERIOUS_PYTHON_SITE_PACKAGES: ${{ github.workspace }}/build/site-packages
 
     steps:
@@ -21,35 +22,27 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Python deps + site-packages
+      - name: Install Python deps + flet
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          mkdir -p build/site-packages
-          if [ -f requirements.txt ]; then pip install -r requirements.txt -t build/site-packages; fi
+          pip install flet==0.28.3
 
-      # 👇 Renderizamos el template y forzamos out_dir=flutter (SIN --extra-context)
-      - name: Render Flet Flutter bootstrap (0.28.3)
+      # Deja que Flet empaquete la app (app.zip, site-packages y build/flutter).
+      # Es normal que falle al compilar por su Flutter 3.29.x; lo ignoramos.
+      - name: Package with Flet (generate app.zip and flutter project)
         run: |
-          pip install cookiecutter
-          rm -rf build/flutter
-          TMPDIR="$(mktemp -d)"
-          cookiecutter \
-            --no-input \
-            --checkout 0.28.3 \
-            --output-dir "$TMPDIR" \
-            https://github.com/flet-dev/flet-build-template.git \
-            out_dir=flutter
-          test -f "$TMPDIR/flutter/pubspec.yaml"
-          mkdir -p build
-          mv "$TMPDIR/flutter" build/flutter
-          mkdir -p build/flutter/app
+          flet build apk || true
+          test -f build/app/app.zip
+          test -d build/flutter
+          test -d build/site-packages || mkdir -p build/site-packages
+          echo "App empaquetada por Flet. Seguimos con Flutter 3.35.6..."
 
-      - name: Package Python app (app.zip)
-        run: |
-          zip -r build/flutter/app/app.zip . -x ".git/*" ".github/*" "build/*" "__pycache__/*" "*.pyc" ".venv/*"
-          shasum -a 256 build/flutter/app/app.zip | awk '{print $1}' > build/flutter/app/app.zip.hash
-          ls -lh build/flutter/app/app.zip build/flutter/app/app.zip.hash
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
 
       - name: Setup Flutter 3.35.6
         uses: subosito/flutter-action@v2
@@ -58,19 +51,27 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Flutter pub get
+      # (Best effort) aceptar licencias si están disponibles
+      - name: Accept Android SDK licenses (best-effort)
+        run: |
+          set +e
+          if [ -n "$ANDROID_SDK_ROOT" ] && [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
+          elif [ -n "$ANDROID_HOME" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses
+          else
+            echo "sdkmanager no encontrado; continuamos."
+          fi
+          set -e
+
+      - name: Flutter pub get (in rendered project)
         working-directory: build/flutter
         run: |
           flutter --version
+          flutter clean
           flutter pub get
 
-      - name: Accept Android SDK licenses (best-effort)
-        run: |
-          if [ -n "$ANDROID_SDK_ROOT" ] && [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-            yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses || true
-          fi
-
-      - name: Build APK (release)
+      - name: Build APK (release) with system Flutter
         working-directory: build/flutter
         env:
           SERIOUS_PYTHON_SITE_PACKAGES: ${{ env.SERIOUS_PYTHON_SITE_PACKAGES }}
