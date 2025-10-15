@@ -1,0 +1,49 @@
+workflows:
+  flet_apk:
+    name: Flet APK
+    instance_type: linux_x2
+
+    environment:
+      flutter: 3.35.6   # Dart 3.9.x (compatible con webview_flutter_android 4.10.x)
+      vars:
+        SERIOUS_PYTHON_SITE_PACKAGES: $CM_BUILD_DIR/build/site-packages
+
+    scripts:
+      # 1) Preparar Python y dependencias
+      - name: Setup Python & deps
+        script: |
+          pip3 install --upgrade pip
+          if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi
+          mkdir -p build/site-packages
+          if [ -f requirements.txt ]; then pip3 install -r requirements.txt -t build/site-packages; fi
+
+      # 2) Clonar el template Flutter de Flet 0.28.3
+      - name: Fetch Flet Flutter bootstrap (0.28.3)
+        script: |
+          git clone --depth 1 --branch 0.28.3 https://github.com/flet-dev/flet-build-template.git build/flutter
+          test -f build/flutter/pubspec.yaml
+          mkdir -p build/flutter/app
+
+      # 3) Empaquetar tu app Python en app.zip (y su hash)
+      - name: Package Python app
+        script: |
+          (zip -r build/flutter/app/app.zip . -x ".git/*" ".github/*" "build/*" "__pycache__/*" "*.pyc" ".venv/*")
+          shasum -a 256 build/flutter/app/app.zip | awk '{print $1}' > build/flutter/app/app.zip.hash
+          ls -lh build/flutter/app/app.zip
+
+      # 4) Resolver dependencias y compilar APK
+      - name: Flutter pub get
+        script: |
+          cd build/flutter
+          flutter pub get
+
+      - name: Build APKs (debug y release)
+        script: |
+          cd build/flutter
+          flutter build apk --debug
+          flutter build apk --release
+          ls -la build/app/outputs/flutter-apk
+
+    artifacts:
+      - build/flutter/build/app/outputs/flutter-apk/app-debug.apk
+      - build/flutter/build/app/outputs/flutter-apk/app-release.apk
