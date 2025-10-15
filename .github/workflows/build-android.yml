@@ -17,6 +17,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Install Python deps
         run: |
@@ -24,9 +25,11 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install flet==0.28.3
 
-      # Empaqueta tu app Python (crea build/flutter + app.zip + site-packages).
-      - name: Package Python app with Flet
+      # Solo usamos "flet build apk" para EMPAQUETAR la app Python (crear build/app/app.zip y build/site-packages).
+      # Si no se genera app.zip, fallamos.
+      - name: Package Python app with Flet (only assets)
         run: |
+          set -e
           flet build apk || true
           test -f build/app/app.zip
 
@@ -34,6 +37,12 @@ jobs:
         run: |
           ls -la build/app || true
           ls -la build/site-packages || true
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -43,9 +52,9 @@ jobs:
           cache: true
 
       - name: Accept Android licenses
-        run: yes | $ANDROID_SDK_ROOT/tools/bin/sdkmanager --licenses
+        run: yes | sdkmanager --licenses
 
-      # Parchea pubspec del bootstrap para evitar el error de webview (Dart 3.9)
+      # Parchea pubspec del bootstrap por si el template trae webview incompatible.
       - name: Patch pubspec (dependency_overrides)
         shell: bash
         run: |
