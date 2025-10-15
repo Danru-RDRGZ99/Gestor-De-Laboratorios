@@ -13,6 +13,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ---------- Python & Flet ----------
       - name: Setup Python 3.10
         uses: actions/setup-python@v5
         with:
@@ -25,25 +26,53 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install flet==0.28.3
 
-      # ⚠️ Dejamos que Flet empaquete app y genere build/flutter; si la compilación
-      # interna falla, NO pasa nada: ya tenemos el bootstrap y los assets listos.
-      - name: Bootstrap with Flet (allow fail)
+      # Intentamos que Flet genere build/flutter (pero que NUNCA rompa el job)
+      - name: Bootstrap with Flet (may fail, continue)
         run: |
-          set -eux
-          flet build apk || true
-          test -f build/app/app.zip
-          test -d build/flutter
-          ls -la build/app
-          ls -la build/flutter
+          set +e
+          flet build apk
+          echo "Exit code of 'flet build apk': $?"
+          set -e
+          # Mostrar qué hay por si alcanzó a crear algo
+          ls -la || true
+          ls -la build || true
+          ls -la build/flutter || true
+          ls -la build/app || true
 
+      # Si no quedó el proyecto Flutter, lo creamos desde el template oficial
+      - name: Ensure Flutter bootstrap exists
+        run: |
+          if [ ! -d build/flutter ]; then
+            git clone --depth 1 --branch 0.28.3 https://github.com/flet-dev/flet-build-template.git build/flutter
+          fi
+          test -f build/flutter/pubspec.yaml
+          mkdir -p build/flutter/app
+
+      # ---------- Empaquetado manual de la app Python ----------
+      - name: Create site-packages
+        run: |
+          mkdir -p build/site-packages
+          # instala libs dentro de build/site-packages (si tienes requirements.txt)
+          if [ -f requirements.txt ]; then pip install -r requirements.txt -t build/site-packages; fi
+
+      - name: Zip Python app (app.zip + hash)
+        run: |
+          # Empaqueta tu código Python en app.zip (excluye basura)
+          cd $GITHUB_WORKSPACE
+          mkdir -p build/flutter/app
+          zip -r build/flutter/app/app.zip . -x ".git/*" ".github/*" "build/*" "__pycache__/*" "*.pyc" ".venv/*"
+          # Hash (sha256)
+          sha256sum build/flutter/app/app.zip | awk '{print $1}' > build/flutter/app/app.zip.hash
+          echo "App zip size:"; ls -lh build/flutter/app/app.zip
+
+      # ---------- Android SDK & Flutter (3.35.6 con Dart 3.9) ----------
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # Instala Android SDK + cmdline-tools (sdkmanager, build-tools, etc.) y acepta licencias
-      - name: Setup Android SDK
+      - name: Setup Android SDK (cmdline-tools + licenses)
         uses: android-actions/setup-android@v3
 
       - name: Setup Flutter 3.35.6 (Dart 3.9)
@@ -53,15 +82,21 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Build APK (release) with Flutter
+      # IMPORTANTE: con Flutter moderno ya NO tenemos el error de Dart 3.7
+      - name: Build APK (release) with Flutter 3.35.6
         env:
           SERIOUS_PYTHON_SITE_PACKAGES: ${{ github.workspace }}/build/site-packages
         run: |
           set -eux
           cd build/flutter
+          # Asegura que el pubspec declara los assets correctos
+          grep -q "app/app.zip" pubspec.yaml
+          grep -q "app/app.zip.hash" pubspec.yaml
+
           flutter clean
           flutter pub get
           flutter build apk --release
+
           ls -la build/app/outputs/flutter-apk
 
       - name: Upload APK
