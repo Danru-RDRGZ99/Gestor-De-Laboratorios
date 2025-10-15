@@ -23,10 +23,8 @@ jobs:
         run: |
           set -eux
           mkdir -p build/app build/site-packages
-          # Instala dependencias de tu app en site-packages + el runtime de Flet
           if [ -f requirements.txt ]; then pip install -r requirements.txt -t build/site-packages; fi
           pip install flet==0.28.3 -t build/site-packages
-          # Empaqueta el código Python
           zip -r build/app/app.zip . -x "build/*" ".git/*" ".github/*" "__pycache__/*" "*.pyc" "venv/*" ".venv/*"
           python - <<'PY'
           import hashlib, pathlib
@@ -51,15 +49,16 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Accept Android licenses
-        run: yes | sdkmanager --licenses
+      # 👇 INSTALA ANDROID SDK + cmdline-tools (proporciona sdkmanager)
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Fetch Flet Flutter template
         run: |
           git clone --depth 1 --branch 0.28.3 https://github.com/flet-dev/flet-build-template.git build/flutter
           sed -n '1,120p' build/flutter/pubspec.yaml
 
-      # Si AÚN vieras error de webview/dart, descomenta este bloque para fijar una versión compatible:
+      # (Opcional) Si volvieras a ver error de Dart/webview, descomenta:
       # - name: Pin webview version (optional)
       #   run: |
       #     cd build/flutter
