@@ -1,136 +1,38 @@
-from __future__ import annotations
+from sqlalchemy.orm import Session
+from .models import User
+from .schemas import UserCreate, UserLogin
+from passlib.context import CryptContext
+import jwt
+from datetime import datetime, timedelta
+import os
 
-import bcrypt
-from sqlalchemy import or_
+# 1. Configurar Passlib
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-from .db import SessionLocal, engine
-# Importamos TODOS los modelos para que Base.metadata conozca todas las tablas
-from .models import Base, Usuario, Plantel, Laboratorio, Recurso, Reserva, Prestamo  # noqa: F401
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
-# --------------------------------------------------------------------------------------
-# Inicialización de BD
-# --------------------------------------------------------------------------------------
-def init_db(create_dev_admin: bool = False) -> None:
-    """
-    Crea tablas si no existen. Si `create_dev_admin=True`, crea un admin por defecto
-    (user: admin, pass: admin123) solo si no existe.
-    """
-    Base.metadata.create_all(bind=engine)
-    if create_dev_admin:
-        _ensure_dev_admin()
+def register_user(db: Session, user: UserCreate):
+    # 2. Usar Passlib para hashear la contraseña
+    hashed_password = pwd_context.hash(user.password)
+    db_user = User(username=user.username, hashed_password=hashed_password)
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
 
-
-def _ensure_dev_admin() -> None:
-    db = SessionLocal()
-    try:
-        admin = db.query(Usuario).filter(Usuario.user == "admin").first()
-        if not admin:
-            u = Usuario(
-                nombre="Administrador",
-                correo="admin@example.com",
-                user="admin",
-                password_hash=hash_password("admin123"),
-                rol="admin",
-            )
-            db.add(u)
-            db.commit()
-    finally:
-        db.close()
-
-
-# --------------------------------------------------------------------------------------
-# Password helpers
-# --------------------------------------------------------------------------------------
-def hash_password(p: str) -> str:
-    return bcrypt.hashpw(p.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-
-
-def verify_password(p: str, h: str | bytes) -> bool:
-    h_bytes = h.encode("utf-8") if isinstance(h, str) else h
-    return bcrypt.checkpw(p.encode("utf-8"), h_bytes)
-
-
-# --------------------------------------------------------------------------------------
-# Auth API
-# --------------------------------------------------------------------------------------
-def login(username_or_email: str, password: str):
-    """
-    Autentica por usuario O correo. Devuelve dict con campos que la UI espera
-    o None si falla.
-    """
-    username_or_email = (username_or_email or "").strip()
-    db = SessionLocal()
-    try:
-        u = (
-            db.query(Usuario)
-            .filter(
-                or_(
-                    Usuario.user == username_or_email,
-                    Usuario.correo == username_or_email.lower(),
-                )
-            )
-            .first()
-        )
-        if not u:
-            return None
-        if not verify_password(password or "", u.password_hash):
-            return None
-        return {
-            "id": u.id,
-            "nombre": u.nombre,
-            "user": u.user,
-            "rol": u.rol,
-            "correo": u.correo,
-        }
-    finally:
-        db.close()
-
-
-ALLOWED_ROLES = {"admin", "docente", "estudiante"}
-
-
-def create_user(nombre: str, correo: str, username: str, password: str, rol: str):
-    """
-    Crea un usuario. Roles permitidos: admin, docente, estudiante.
-    Retorna (ok: bool, payload: dict|str)
-    """
-    nombre = (nombre or "").strip()
-    correo = (correo or "").strip().lower()
-    username = (username or "").strip()
-    rol_norm = (rol or "").strip().lower()
-
-    if rol_norm not in ALLOWED_ROLES:
-        return False, "Rol no permitido (usa: admin, docente o estudiante)"
-    if not nombre or not correo or not username or not password:
-        return False, "Campos incompletos"
-    if len(password) < 6:
-        return False, "La contraseña debe tener al menos 6 caracteres"
-
-    db = SessionLocal()
-    try:
-        if db.query(Usuario).filter(Usuario.user == username).first():
-            return False, "El usuario ya existe"
-        if db.query(Usuario).filter(Usuario.correo == correo).first():
-            return False, "El correo ya está registrado"
-
-        u = Usuario(
-            nombre=nombre,
-            correo=correo,
-            user=username,
-            password_hash=hash_password(password),
-            rol=rol_norm,
-        )
-        db.add(u)
-        db.commit()
-        db.refresh(u)
-
-        return True, {
-            "id": u.id,
-            "nombre": u.nombre,
-            "user": u.user,
-            "rol": u.rol,
-            "correo": u.correo,
-        }
-    finally:
-        db.close()
+def login(db: Session, user: UserLogin):
+    db_user = db.query(User).filter(User.username == user.username).first()
+    # 3. Usar Passlib para verificar la contraseña
+    if db_user and pwd_context.verify(user.password, db_user.hashed_password):
+        access_token = create_access_token(data={"sub": db_user.username})
+        return {"access_token": access_token, "token_type": "bearer"}
+    return None
