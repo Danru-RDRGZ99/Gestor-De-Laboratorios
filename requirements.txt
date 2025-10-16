@@ -1,4 +1,5 @@
 flet==0.28.3
-SQLAlchemy
+sqlalchemy
+pg8000
 passlib[bcrypt]==1.7.4
 python-dotenv>=1.0.1
