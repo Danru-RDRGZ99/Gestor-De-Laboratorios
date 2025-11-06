@@ -1,5 +1,0 @@
-flet==0.28.3
-sqlalchemy
-pg8000
-python-dotenv==1.0.1
-passlib
