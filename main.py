@@ -125,7 +125,7 @@ async def startup_event():
 # --- AUTHENTICATION ENDPOINTS ---
 # ==============================================================================
 
-@app.get("/captcha", tags=["Auth"]) # <--- NO CAMBIA EL NOMBRE DEL ENDPOINT
+@app.get("/captcha", tags=["Auth"])
 async def get_captcha(request: Request):
     image_captcha = ImageCaptcha()
     captcha_text = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
@@ -137,12 +137,9 @@ async def get_captcha(request: Request):
     # 1. Codifica los bytes de la imagen a base64
     image_b64 = base64.b64encode(image_bytes).decode('utf-8')
     
-    # 2. Prepara el string completo que Flet necesita (data:image/png;base64,...)
-    b64_string = f"data:image/png;base64,{image_b64}"
-
-    # 3. Devuelve un JSON (diccionario) en lugar de una Response de imagen
-    return {"image_data": b64_string}
-
+    # 2. Devuelve SÓLO el string base64 puro
+    return {"image_data": image_b64}
+    # --- FIN DE LA CORRECCIÓN ---
 # --- Standard Login Endpoint (Username/Password + CAPTCHA) ---
 @app.post("/token", response_model=schemas.Token, tags=["Auth"])
 async def login_for_access_token(request: Request, login_data: LoginRequest, db: DbSession):
