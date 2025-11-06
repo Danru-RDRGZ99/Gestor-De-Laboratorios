@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from typing import List, Annotated, Optional, Dict, Tuple
 from datetime import datetime, timedelta, timezone, date, time
 import traceback
+import os
 
 # --- Security and Authentication Imports ---
 from fastapi.security import OAuth2PasswordRequestForm
@@ -36,12 +37,12 @@ def generate_random_password(length=16):
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 # --- End Helper ---
 
-# --- Load Configuration from .env ---
-config = Config(".env")
+# --- Load Configuration from environment variables (Railway) ---
+# Railway proporciona las variables de entorno directamente
 # --- End Configuration ---
 
 # --- Database Initialization ---
-auth_service.init_db(create_dev_admin=True)
+# Se ejecutará automáticamente al iniciar la aplicación
 # --- End Database Initialization ---
 
 # --- FastAPI App Initialization ---
@@ -53,9 +54,12 @@ app = FastAPI(
 # --- End App Initialization ---
 
 # --- Middleware ---
+# Usar variable de entorno para secret key en producción
+SECRET_KEY = os.getenv("SESSION_SECRET_KEY", "a-very-secret-key-please-change-in-production")
+
 app.add_middleware(
     SessionMiddleware,
-    secret_key=config("SESSION_SECRET_KEY", default="a-very-secret-key-please-change"),
+    secret_key=SECRET_KEY,
     session_cookie="session_id",
     max_age=3600,
     same_site="lax",
@@ -111,6 +115,9 @@ def load_labs_cache():
 # Carga la caché al iniciar la aplicación
 @app.on_event("startup")
 async def startup_event():
+    # Inicializar base de datos
+    auth_service.init_db(create_dev_admin=True)
+    # Cargar cache de laboratorios
     load_labs_cache()
 
 # ==============================================================================
@@ -148,12 +155,14 @@ async def login_for_access_token(request: Request, login_data: LoginRequest, db:
 @app.post("/auth/google-token", response_model=schemas.Token, tags=["Auth"])
 async def login_with_google_token(token_data: GoogleToken, db: DbSession):
     try:
-        google_client_id = config("GOOGLE_CLIENT_ID")
-        if not google_client_id: raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="GOOGLE_CLIENT_ID no configurado en .env")
+        google_client_id = os.getenv("GOOGLE_CLIENT_ID")
+        if not google_client_id: 
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="GOOGLE_CLIENT_ID no configurado")
         id_info = id_token.verify_oauth2_token(token_data.id_token, request=None, audience=google_client_id)
         user_email = id_info.get('email').lower()
         user_name = id_info.get('name') or id_info.get('given_name') or user_email.split('@')[0]
-        if not user_email: raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="No se pudo obtener el email del token de Google.")
+        if not user_email: 
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="No se pudo obtener el email del token de Google.")
         print(f"DEBUG: Google Token verificado para: {user_email}")
         db_user = db.query(models.Usuario).filter(models.Usuario.correo == user_email).first()
         if not db_user:
@@ -164,11 +173,15 @@ async def login_with_google_token(token_data: GoogleToken, db: DbSession):
                 if "El usuario ya existe" in str(result):
                     user_username = f"{user_email.split('@')[0]}_{secrets.token_hex(4)}"
                     ok, result = auth_service.create_user(nombre=user_name, correo=user_email, user=user_username, password=random_pass, rol='estudiante')
-                    if not ok: raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al crear usuario: {result}")
-                else: raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al crear usuario: {result}")
+                    if not ok: 
+                        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al crear usuario: {result}")
+                else: 
+                    raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al crear usuario: {result}")
             db_user = db.get(models.Usuario, result["id"])
-            if not db_user: raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, detail="Usuario creado pero no se pudo recuperar.")
-        else: print(f"INFO: Usuario encontrado para {user_email} (ID: {db_user.id})")
+            if not db_user: 
+                raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, detail="Usuario creado pero no se pudo recuperar.")
+        else: 
+            print(f"INFO: Usuario encontrado para {user_email} (ID: {db_user.id})")
         expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
         token_data_payload = {"sub": db_user.user, "rol": db_user.rol, "id": db_user.id}
         access_token = security.create_access_token(data=token_data_payload, expires_delta=expires)
@@ -185,19 +198,21 @@ async def login_with_google_token(token_data: GoogleToken, db: DbSession):
 @app.post("/register", response_model=schemas.Usuario, tags=["Auth"], status_code=status.HTTP_201_CREATED)
 def register_user(user: schemas.UsuarioCreate, db: DbSession):
     ok, result = auth_service.create_user(**user.model_dump())
-    if not ok: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(result))
+    if not ok: 
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(result))
     user_db = db.get(models.Usuario, result["id"])
-    if not user_db: raise HTTPException(status_code=404, detail="Usuario creado pero no recuperado.")
+    if not user_db: 
+        raise HTTPException(status_code=404, detail="Usuario creado pero no recuperado.")
     return user_db
 
 # ==============================================================================
 # --- USER MANAGEMENT ENDPOINTS ---
 # ==============================================================================
-# ... (User management endpoints remain the same) ...
 @app.get("/usuarios", response_model=List[schemas.Usuario], tags=["Usuarios (Admin)"])
 def get_all_users(user: AdminUser, db: DbSession, q: Optional[str] = "", rol: Optional[str] = ""):
     query = db.query(models.Usuario)
-    if rol: query = query.filter(models.Usuario.rol == rol)
+    if rol: 
+        query = query.filter(models.Usuario.rol == rol)
     if q:
         search = f"%{q.lower()}%"
         query = query.filter((models.Usuario.nombre.ilike(search)) | (models.Usuario.user.ilike(search)) | (models.Usuario.correo.ilike(search)))
@@ -206,64 +221,90 @@ def get_all_users(user: AdminUser, db: DbSession, q: Optional[str] = "", rol: Op
 @app.put("/usuarios/{user_id}", response_model=schemas.Usuario, tags=["Usuarios (Admin)"])
 def update_user_by_admin(user_id: int, user_update: UsuarioAdminUpdate, user: AdminUser, db: DbSession):
     user_to_update = db.get(models.Usuario, user_id)
-    if not user_to_update: raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    if user_id == user["id"] and user_update.rol and user_update.rol != "admin": raise HTTPException(status_code=403, detail="No puedes revocar tu propio rol.")
+    if not user_to_update: 
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if user_id == user["id"] and user_update.rol and user_update.rol != "admin": 
+        raise HTTPException(status_code=403, detail="No puedes revocar tu propio rol.")
     update_data = user_update.model_dump(exclude_unset=True)
-    if not update_data: raise HTTPException(status_code=400, detail="No se proporcionaron datos.")
+    if not update_data: 
+        raise HTTPException(status_code=400, detail="No se proporcionaron datos.")
     if 'user' in update_data and update_data['user'] != user_to_update.user:
-        if db.query(models.Usuario).filter(models.Usuario.user == update_data['user'], models.Usuario.id != user_id).first(): raise HTTPException(status_code=400, detail="Usuario ya en uso.")
+        if db.query(models.Usuario).filter(models.Usuario.user == update_data['user'], models.Usuario.id != user_id).first(): 
+            raise HTTPException(status_code=400, detail="Usuario ya en uso.")
     if 'correo' in update_data and update_data['correo'] != user_to_update.correo:
-        if db.query(models.Usuario).filter(models.Usuario.correo == update_data['correo'], models.Usuario.id != user_id).first(): raise HTTPException(status_code=400, detail="Correo ya registrado.")
+        if db.query(models.Usuario).filter(models.Usuario.correo == update_data['correo'], models.Usuario.id != user_id).first(): 
+            raise HTTPException(status_code=400, detail="Correo ya registrado.")
     allowed_roles = {'admin', 'docente', 'estudiante'}
     if 'rol' in update_data and update_data['rol'] not in allowed_roles:
         raise HTTPException(status_code=400, detail=f"Rol '{update_data['rol']}' inválido. Permitidos: {', '.join(allowed_roles)}")
-    for key, value in update_data.items(): setattr(user_to_update, key, value)
-    try: db.commit(); db.refresh(user_to_update); return user_to_update
-    except Exception as e: db.rollback(); print(f"ERROR updating user {user_id}: {e}"); raise HTTPException(status_code=500, detail="Error interno.")
+    for key, value in update_data.items(): 
+        setattr(user_to_update, key, value)
+    try: 
+        db.commit(); db.refresh(user_to_update); return user_to_update
+    except Exception as e: 
+        db.rollback(); print(f"ERROR updating user {user_id}: {e}"); 
+        raise HTTPException(status_code=500, detail="Error interno.")
 
 @app.delete("/usuarios/{user_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Usuarios (Admin)"])
 def delete_user(user_id: int, user: AdminUser, db: DbSession):
-    if user_id == user["id"]: raise HTTPException(status_code=403, detail="No puedes eliminar tu propia cuenta.")
+    if user_id == user["id"]: 
+        raise HTTPException(status_code=403, detail="No puedes eliminar tu propia cuenta.")
     user_to_delete = db.get(models.Usuario, user_id)
-    if not user_to_delete: raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if not user_to_delete: 
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
     active_prestamos = db.query(models.Prestamo).filter(models.Prestamo.usuario_id == user_id, models.Prestamo.estado.notin_(['devuelto', 'rechazado'])).count()
-    if active_prestamos > 0: raise HTTPException(status_code=409, detail=f"No se puede eliminar: usuario tiene {active_prestamos} préstamo(s) activo(s).")
+    if active_prestamos > 0: 
+        raise HTTPException(status_code=409, detail=f"No se puede eliminar: usuario tiene {active_prestamos} préstamo(s) activo(s).")
     try:
         db.delete(user_to_delete); db.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as e:
         db.rollback(); print(f"ERROR deleting user {user_id}: {e}")
-        if "violates foreign key constraint" in str(e).lower() and "reservas" in str(e).lower(): raise HTTPException(status_code=409, detail="No se puede eliminar: el usuario tiene reservas asociadas.")
+        if "violates foreign key constraint" in str(e).lower() and "reservas" in str(e).lower(): 
+            raise HTTPException(status_code=409, detail="No se puede eliminar: el usuario tiene reservas asociadas.")
         raise HTTPException(status_code=500, detail=f"Error interno al eliminar usuario: {e}")
 
 @app.put("/usuarios/me/profile", response_model=schemas.Usuario, tags=["Usuarios"])
 def update_my_profile(profile_data: schemas.ProfileUpdate, user: CurrentUser, db: DbSession):
     user_to_update = db.get(models.Usuario, user["id"])
-    if not user_to_update: raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if not user_to_update: 
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
     update_data = profile_data.model_dump(exclude_unset=True)
-    if not update_data: raise HTTPException(status_code=400, detail="No se proporcionaron datos.")
+    if not update_data: 
+        raise HTTPException(status_code=400, detail="No se proporcionaron datos.")
     if 'user' in update_data and update_data['user'] != user_to_update.user:
-        if db.query(models.Usuario).filter(models.Usuario.user == update_data['user'], models.Usuario.id != user["id"]).first(): raise HTTPException(status_code=400, detail="Nombre de usuario ya en uso.")
+        if db.query(models.Usuario).filter(models.Usuario.user == update_data['user'], models.Usuario.id != user["id"]).first(): 
+            raise HTTPException(status_code=400, detail="Nombre de usuario ya en uso.")
     if 'correo' in update_data and update_data['correo'] != user_to_update.correo:
-        if db.query(models.Usuario).filter(models.Usuario.correo == update_data['correo'], models.Usuario.id != user["id"]).first(): raise HTTPException(status_code=400, detail="Correo ya registrado.")
-    for key, value in update_data.items(): setattr(user_to_update, key, value)
-    try: db.commit(); db.refresh(user_to_update); return user_to_update
-    except Exception as e: db.rollback(); print(f"ERROR updating profile: {e}"); raise HTTPException(status_code=500, detail="Error interno.")
+        if db.query(models.Usuario).filter(models.Usuario.correo == update_data['correo'], models.Usuario.id != user["id"]).first(): 
+            raise HTTPException(status_code=400, detail="Correo ya registrado.")
+    for key, value in update_data.items(): 
+        setattr(user_to_update, key, value)
+    try: 
+        db.commit(); db.refresh(user_to_update); return user_to_update
+    except Exception as e: 
+        db.rollback(); print(f"ERROR updating profile: {e}"); 
+        raise HTTPException(status_code=500, detail="Error interno.")
 
 @app.put("/usuarios/me/password", tags=["Usuarios"])
 def change_my_password(pass_data: schemas.PasswordUpdate, user: CurrentUser, db: DbSession):
     user_in_db = db.get(models.Usuario, user["id"])
-    if not user_in_db: raise HTTPException(status_code=404, detail="Usuario no encontrado.")
-    if not auth_service.verify_password(pass_data.old_password, user_in_db.password_hash): raise HTTPException(status_code=400, detail="Contraseña actual incorrecta.")
-    if len(pass_data.new_password) < 6: raise HTTPException(status_code=400, detail="Contraseña debe tener >= 6 caracteres.")
+    if not user_in_db: 
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+    if not auth_service.verify_password(pass_data.old_password, user_in_db.password_hash): 
+        raise HTTPException(status_code=400, detail="Contraseña actual incorrecta.")
+    if len(pass_data.new_password) < 6: 
+        raise HTTPException(status_code=400, detail="Contraseña debe tener >= 6 caracteres.")
     user_in_db.password_hash = auth_service.hash_password(pass_data.new_password)
-    try: db.commit(); return {"message": "Contraseña actualizada."}
-    except Exception as e: db.rollback(); print(f"ERROR updating password: {e}"); raise HTTPException(status_code=500, detail="Error interno.")
+    try: 
+        db.commit(); return {"message": "Contraseña actualizada."}
+    except Exception as e: 
+        db.rollback(); print(f"ERROR updating password: {e}"); 
+        raise HTTPException(status_code=500, detail="Error interno.")
 
 # ==============================================================================
 # --- OTHER RESOURCE ENDPOINTS ---
 # ==============================================================================
-# ... (Planteles, Laboratorios, Recursos endpoints remain the same) ...
 # --- Planteles ---
 @app.get("/planteles", response_model=List[schemas.Plantel], tags=["Admin: Gestión"])
 def get_all_planteles(user: CurrentUser, db: DbSession):
@@ -271,80 +312,113 @@ def get_all_planteles(user: CurrentUser, db: DbSession):
 
 @app.post("/planteles", response_model=schemas.Plantel, status_code=status.HTTP_201_CREATED, tags=["Admin: Gestión"])
 def create_plantel(plantel: schemas.PlantelCreate, user: AdminUser, db: DbSession):
-    if not plantel.nombre.strip() or not plantel.direccion.strip(): raise HTTPException(status_code=400, detail="Nombre y dirección obligatorios.")
+    if not plantel.nombre.strip() or not plantel.direccion.strip(): 
+        raise HTTPException(status_code=400, detail="Nombre y dirección obligatorios.")
     new_plantel = models.Plantel(**plantel.model_dump()); db.add(new_plantel)
-    try: db.commit(); db.refresh(new_plantel); return new_plantel
-    except Exception as e: db.rollback(); print(f"ERROR creating plantel: {e}"); raise HTTPException(status_code=400, detail=f"Error: {e}")
+    try: 
+        db.commit(); db.refresh(new_plantel); return new_plantel
+    except Exception as e: 
+        db.rollback(); print(f"ERROR creating plantel: {e}"); 
+        raise HTTPException(status_code=400, detail=f"Error: {e}")
 
 @app.put("/planteles/{plantel_id}", response_model=schemas.Plantel, tags=["Admin: Gestión"])
 def update_plantel(plantel_id: int, plantel_update: schemas.PlantelCreate, user: AdminUser, db: DbSession):
     db_plantel = db.get(models.Plantel, plantel_id);
-    if not db_plantel: raise HTTPException(status_code=404, detail="Plantel no encontrado")
+    if not db_plantel: 
+        raise HTTPException(status_code=404, detail="Plantel no encontrado")
     update_data = plantel_update.model_dump(exclude_unset=True)
-    if 'nombre' in update_data and not update_data['nombre'].strip(): raise HTTPException(status_code=400, detail="Nombre no puede estar vacío.")
-    if 'direccion' in update_data and not update_data['direccion'].strip(): raise HTTPException(status_code=400, detail="Dirección no puede estar vacía.")
-    for key, value in update_data.items(): setattr(db_plantel, key, value)
-    try: db.commit(); db.refresh(db_plantel); return db_plantel
-    except Exception as e: db.rollback(); print(f"ERROR updating plantel {plantel_id}: {e}"); raise HTTPException(status_code=400, detail=f"Error: {e}")
+    if 'nombre' in update_data and not update_data['nombre'].strip(): 
+        raise HTTPException(status_code=400, detail="Nombre no puede estar vacío.")
+    if 'direccion' in update_data and not update_data['direccion'].strip(): 
+        raise HTTPException(status_code=400, detail="Dirección no puede estar vacía.")
+    for key, value in update_data.items(): 
+        setattr(db_plantel, key, value)
+    try: 
+        db.commit(); db.refresh(db_plantel); return db_plantel
+    except Exception as e: 
+        db.rollback(); print(f"ERROR updating plantel {plantel_id}: {e}"); 
+        raise HTTPException(status_code=400, detail=f"Error: {e}")
 
 @app.delete("/planteles/{plantel_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Admin: Gestión"])
 def delete_plantel(plantel_id: int, user: AdminUser, db: DbSession):
     db_plantel = db.get(models.Plantel, plantel_id)
-    if not db_plantel: raise HTTPException(status_code=404, detail="Plantel no encontrado")
+    if not db_plantel: 
+        raise HTTPException(status_code=404, detail="Plantel no encontrado")
     labs_count = db.query(models.Laboratorio).filter(models.Laboratorio.plantel_id == plantel_id).count()
-    if labs_count > 0: raise HTTPException(status_code=409, detail=f"No se puede eliminar: hay {labs_count} lab(s) asociados.")
-    try: db.delete(db_plantel); db.commit(); return Response(status_code=status.HTTP_204_NO_CONTENT)
-    except Exception as e: db.rollback(); print(f"ERROR deleting plantel {plantel_id}: {e}"); raise HTTPException(status_code=500, detail=f"Error: {e}")
+    if labs_count > 0: 
+        raise HTTPException(status_code=409, detail=f"No se puede eliminar: hay {labs_count} lab(s) asociados.")
+    try: 
+        db.delete(db_plantel); db.commit(); 
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as e: 
+        db.rollback(); print(f"ERROR deleting plantel {plantel_id}: {e}"); 
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
 
 # --- Laboratorios ---
 @app.get("/laboratorios", response_model=List[schemas.Laboratorio], tags=["Admin: Gestión"])
 def get_all_laboratorios(user: CurrentUser, db: DbSession):
-    if not labs_cache_main: load_labs_cache()
+    if not labs_cache_main: 
+        load_labs_cache()
     return db.query(models.Laboratorio).options(joinedload(models.Laboratorio.plantel)).order_by(models.Laboratorio.id.desc()).all()
 
 @app.post("/laboratorios", response_model=schemas.Laboratorio, status_code=status.HTTP_201_CREATED, tags=["Admin: Gestión"])
 def create_laboratorio(lab: schemas.LaboratorioCreate, user: AdminUser, db: DbSession):
-    if not lab.nombre.strip(): raise HTTPException(status_code=400, detail="Nombre obligatorio.")
+    if not lab.nombre.strip(): 
+        raise HTTPException(status_code=400, detail="Nombre obligatorio.")
     plantel = db.get(models.Plantel, lab.plantel_id);
-    if not plantel: raise HTTPException(status_code=404, detail=f"Plantel id {lab.plantel_id} no encontrado.")
+    if not plantel: 
+        raise HTTPException(status_code=404, detail=f"Plantel id {lab.plantel_id} no encontrado.")
     new_lab = models.Laboratorio(**lab.model_dump()); db.add(new_lab)
     try:
         db.commit(); db.refresh(new_lab)
         labs_cache_main[new_lab.id] = new_lab
         db.refresh(new_lab.plantel)
         return new_lab
-    except Exception as e: db.rollback(); print(f"ERROR creating lab: {e}"); raise HTTPException(status_code=400, detail=f"Error: {e}")
+    except Exception as e: 
+        db.rollback(); print(f"ERROR creating lab: {e}"); 
+        raise HTTPException(status_code=400, detail=f"Error: {e}")
 
 @app.put("/laboratorios/{lab_id}", response_model=schemas.Laboratorio, tags=["Admin: Gestión"])
 def update_laboratorio(lab_id: int, lab_update: schemas.LaboratorioCreate, user: AdminUser, db: DbSession):
     db_lab = db.get(models.Laboratorio, lab_id)
-    if not db_lab: raise HTTPException(status_code=404, detail="Laboratorio no encontrado")
+    if not db_lab: 
+        raise HTTPException(status_code=404, detail="Laboratorio no encontrado")
     update_data = lab_update.model_dump(exclude_unset=True)
-    if 'nombre' in update_data and not update_data['nombre'].strip(): raise HTTPException(status_code=400, detail="Nombre no puede estar vacío.")
+    if 'nombre' in update_data and not update_data['nombre'].strip(): 
+        raise HTTPException(status_code=400, detail="Nombre no puede estar vacío.")
     if 'plantel_id' in update_data and update_data['plantel_id'] != db_lab.plantel_id:
         plantel = db.get(models.Plantel, update_data['plantel_id'])
-        if not plantel: raise HTTPException(status_code=404, detail=f"Plantel id {update_data['plantel_id']} no encontrado.")
-    for key, value in update_data.items(): setattr(db_lab, key, value)
+        if not plantel: 
+            raise HTTPException(status_code=404, detail=f"Plantel id {update_data['plantel_id']} no encontrado.")
+    for key, value in update_data.items(): 
+        setattr(db_lab, key, value)
     try:
         db.commit(); db.refresh(db_lab)
         labs_cache_main[db_lab.id] = db_lab
         db.refresh(db_lab.plantel)
         return db_lab
-    except Exception as e: db.rollback(); print(f"ERROR updating lab {lab_id}: {e}"); raise HTTPException(status_code=400, detail=f"Error: {e}")
+    except Exception as e: 
+        db.rollback(); print(f"ERROR updating lab {lab_id}: {e}"); 
+        raise HTTPException(status_code=400, detail=f"Error: {e}")
 
 @app.delete("/laboratorios/{lab_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Admin: Gestión"])
 def delete_laboratorio(lab_id: int, user: AdminUser, db: DbSession):
     db_lab = db.get(models.Laboratorio, lab_id);
-    if not db_lab: raise HTTPException(status_code=404, detail="Laboratorio no encontrado")
+    if not db_lab: 
+        raise HTTPException(status_code=404, detail="Laboratorio no encontrado")
     recursos_count = db.query(models.Recurso).filter(models.Recurso.laboratorio_id == lab_id).count()
-    if recursos_count > 0: raise HTTPException(status_code=409, detail=f"No se puede eliminar: hay {recursos_count} recurso(s) asociados.")
+    if recursos_count > 0: 
+        raise HTTPException(status_code=409, detail=f"No se puede eliminar: hay {recursos_count} recurso(s) asociados.")
     reservas_count = db.query(models.Reserva).filter(models.Reserva.laboratorio_id == lab_id).count()
-    if reservas_count > 0: raise HTTPException(status_code=409, detail=f"No se puede eliminar: hay {reservas_count} reserva(s) asociada(s).")
+    if reservas_count > 0: 
+        raise HTTPException(status_code=409, detail=f"No se puede eliminar: hay {reservas_count} reserva(s) asociada(s).")
     try:
         db.delete(db_lab); db.commit()
         labs_cache_main.pop(lab_id, None)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-    except Exception as e: db.rollback(); print(f"ERROR deleting lab {lab_id}: {e}"); raise HTTPException(status_code=500, detail=f"Error: {e}")
+    except Exception as e: 
+        db.rollback(); print(f"ERROR deleting lab {lab_id}: {e}"); 
+        raise HTTPException(status_code=500, detail=f"Error: {e}")
 
 # --- RECURSOS ENDPOINTS ---
 @app.get("/recursos", response_model=List[schemas.Recurso], tags=["Recursos"])
@@ -352,12 +426,15 @@ def get_recursos_filtrados(
     user: CurrentUser, db: DbSession, plantel_id: Optional[int] = None, lab_id: Optional[int] = None, estado: Optional[str] = None, tipo: Optional[str] = None
 ):
     q = db.query(models.Recurso)
-    if lab_id: q = q.filter(models.Recurso.laboratorio_id == lab_id)
+    if lab_id: 
+        q = q.filter(models.Recurso.laboratorio_id == lab_id)
     elif plantel_id:
         lab_ids_subquery = db.query(models.Laboratorio.id).filter(models.Laboratorio.plantel_id == plantel_id).subquery()
         q = q.filter(models.Recurso.laboratorio_id.in_(lab_ids_subquery))
-    if estado: q = q.filter(models.Recurso.estado == estado)
-    if tipo: q = q.filter(models.Recurso.tipo == tipo)
+    if estado: 
+        q = q.filter(models.Recurso.estado == estado)
+    if tipo: 
+        q = q.filter(models.Recurso.tipo == tipo)
     q = q.options(joinedload(models.Recurso.laboratorio).joinedload(models.Laboratorio.plantel))
     return q.order_by(models.Recurso.id.desc()).all()
 
@@ -370,87 +447,118 @@ def get_recurso_tipos(user: CurrentUser, db: DbSession):
 
 @app.post("/recursos", response_model=schemas.Recurso, status_code=status.HTTP_201_CREATED, tags=["Admin: Gestión"])
 def create_recurso(recurso: schemas.RecursoCreate, user: AdminUser, db: DbSession):
-    if not recurso.tipo.strip() or not recurso.estado.strip(): raise HTTPException(status_code=400, detail="Tipo y estado obligatorios.")
-    if recurso.estado not in ["disponible", "prestado", "mantenimiento"]: raise HTTPException(status_code=400, detail="Estado inválido.")
+    if not recurso.tipo.strip() or not recurso.estado.strip(): 
+        raise HTTPException(status_code=400, detail="Tipo y estado obligatorios.")
+    if recurso.estado not in ["disponible", "prestado", "mantenimiento"]: 
+        raise HTTPException(status_code=400, detail="Estado inválido.")
     lab = db.get(models.Laboratorio, recurso.laboratorio_id)
-    if not lab: raise HTTPException(status_code=404, detail="Laboratorio id no encontrado.")
+    if not lab: 
+        raise HTTPException(status_code=404, detail="Laboratorio id no encontrado.")
     new_recurso = models.Recurso(**recurso.model_dump()); db.add(new_recurso)
     try:
         db.commit(); db.refresh(new_recurso); db.refresh(new_recurso.laboratorio)
         return new_recurso
-    except Exception as e: db.rollback(); print(f"ERROR creating resource: {e}"); traceback.print_exc(); raise HTTPException(status_code=400, detail=f"Error al crear recurso: {e}")
+    except Exception as e: 
+        db.rollback(); print(f"ERROR creating resource: {e}"); traceback.print_exc(); 
+        raise HTTPException(status_code=400, detail=f"Error al crear recurso: {e}")
 
 
 @app.put("/recursos/{recurso_id}", response_model=schemas.Recurso, tags=["Admin: Gestión"])
 def update_recurso(recurso_id: int, recurso_update: schemas.RecursoCreate, user: AdminUser, db: DbSession):
     db_recurso = db.get(models.Recurso, recurso_id)
-    if not db_recurso: raise HTTPException(status_code=404, detail="Recurso no encontrado")
+    if not db_recurso: 
+        raise HTTPException(status_code=404, detail="Recurso no encontrado")
     update_data = recurso_update.model_dump(exclude_unset=True)
-    if 'tipo' in update_data and not update_data['tipo'].strip(): raise HTTPException(status_code=400, detail="Tipo no puede estar vacío.")
+    if 'tipo' in update_data and not update_data['tipo'].strip(): 
+        raise HTTPException(status_code=400, detail="Tipo no puede estar vacío.")
     if 'estado' in update_data:
-        if not update_data['estado'].strip(): raise HTTPException(status_code=400, detail="Estado no puede estar vacío.")
-        if update_data['estado'] not in ["disponible", "prestado", "mantenimiento"]: raise HTTPException(status_code=400, detail="Estado inválido.")
+        if not update_data['estado'].strip(): 
+            raise HTTPException(status_code=400, detail="Estado no puede estar vacío.")
+        if update_data['estado'] not in ["disponible", "prestado", "mantenimiento"]: 
+            raise HTTPException(status_code=400, detail="Estado inválido.")
     if 'laboratorio_id' in update_data and update_data['laboratorio_id'] != db_recurso.laboratorio_id:
         lab = db.get(models.Laboratorio, update_data['laboratorio_id'])
-        if not lab: raise HTTPException(status_code=404, detail="Laboratorio id no encontrado.")
-    for key, value in update_data.items(): setattr(db_recurso, key, value)
+        if not lab: 
+            raise HTTPException(status_code=404, detail="Laboratorio id no encontrado.")
+    for key, value in update_data.items(): 
+        setattr(db_recurso, key, value)
     try:
         db.commit(); db.refresh(db_recurso); db.refresh(db_recurso.laboratorio)
         return db_recurso
-    except Exception as e: db.rollback(); print(f"ERROR updating resource {recurso_id}: {e}"); traceback.print_exc(); raise HTTPException(status_code=400, detail=f"Error al actualizar recurso: {e}")
+    except Exception as e: 
+        db.rollback(); print(f"ERROR updating resource {recurso_id}: {e}"); traceback.print_exc(); 
+        raise HTTPException(status_code=400, detail=f"Error al actualizar recurso: {e}")
 
 
 @app.delete("/recursos/{recurso_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Admin: Gestión"])
 def delete_recurso(recurso_id: int, user: AdminUser, db: DbSession):
     db_recurso = db.get(models.Recurso, recurso_id)
-    if not db_recurso: raise HTTPException(status_code=404, detail="Recurso no encontrado")
+    if not db_recurso: 
+        raise HTTPException(status_code=404, detail="Recurso no encontrado")
     prestamos_count = db.query(models.Prestamo).filter(models.Prestamo.recurso_id == recurso_id).count()
-    if prestamos_count > 0: raise HTTPException(status_code=409, detail=f"No se puede eliminar: hay {prestamos_count} préstamo(s) asociado(s).")
+    if prestamos_count > 0: 
+        raise HTTPException(status_code=409, detail=f"No se puede eliminar: hay {prestamos_count} préstamo(s) asociado(s).")
     try:
         db.delete(db_recurso); db.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-    except Exception as e: db.rollback(); print(f"ERROR deleting resource {recurso_id}: {e}"); traceback.print_exc(); raise HTTPException(status_code=500, detail=f"Error interno al eliminar recurso: {e}")
+    except Exception as e: 
+        db.rollback(); print(f"ERROR deleting resource {recurso_id}: {e}"); traceback.print_exc(); 
+        raise HTTPException(status_code=500, detail=f"Error interno al eliminar recurso: {e}")
 
 # ==============================================================================
 # --- ENDPOINTS DE GESTIÓN DE HORARIOS (ADMIN) ---
 # ==============================================================================
-# ... (Schedule Management endpoints remain the same) ...
 @app.post("/admin/horarios/reglas", response_model=schemas.ReglaHorario, status_code=status.HTTP_201_CREATED, tags=["Admin: Horarios"])
 def create_regla_horario(regla: schemas.ReglaHorarioCreate, user: AdminUser, db: DbSession):
-    if not (0 <= regla.dia_semana <= 6): raise HTTPException(status_code=400, detail="dia_semana debe estar entre 0 (Lunes) y 6 (Domingo).")
-    if regla.hora_inicio >= regla.hora_fin: raise HTTPException(status_code=400, detail="hora_inicio debe ser anterior a hora_fin.")
+    if not (0 <= regla.dia_semana <= 6): 
+        raise HTTPException(status_code=400, detail="dia_semana debe estar entre 0 (Lunes) y 6 (Domingo).")
+    if regla.hora_inicio >= regla.hora_fin: 
+        raise HTTPException(status_code=400, detail="hora_inicio debe ser anterior a hora_fin.")
     db_regla = models.ReglaHorario(**regla.model_dump())
     try:
         db.add(db_regla); db.commit(); db.refresh(db_regla)
         return db_regla
-    except Exception as e: db.rollback(); traceback.print_exc(); raise HTTPException(status_code=500, detail=f"Error al crear regla: {e}")
+    except Exception as e: 
+        db.rollback(); traceback.print_exc(); 
+        raise HTTPException(status_code=500, detail=f"Error al crear regla: {e}")
 
 @app.get("/admin/horarios/reglas", response_model=List[schemas.ReglaHorario], tags=["Admin: Horarios"])
 def get_reglas_horario(user: AdminUser, db: DbSession, laboratorio_id: Optional[int] = None):
     query = db.query(models.ReglaHorario)
-    if laboratorio_id is not None: query = query.filter(models.ReglaHorario.laboratorio_id == laboratorio_id)
+    if laboratorio_id is not None: 
+        query = query.filter(models.ReglaHorario.laboratorio_id == laboratorio_id)
     return query.order_by(models.ReglaHorario.laboratorio_id, models.ReglaHorario.dia_semana, models.ReglaHorario.hora_inicio).all()
 
 @app.put("/admin/horarios/reglas/{regla_id}", response_model=schemas.ReglaHorario, tags=["Admin: Horarios"])
 def update_regla_horario(regla_id: int, regla_update: schemas.ReglaHorarioUpdate, user: AdminUser, db: DbSession):
     db_regla = db.get(models.ReglaHorario, regla_id)
-    if not db_regla: raise HTTPException(status_code=404, detail="Regla no encontrada")
+    if not db_regla: 
+        raise HTTPException(status_code=404, detail="Regla no encontrada")
     update_data = regla_update.model_dump(exclude_unset=True)
-    if not update_data: raise HTTPException(status_code=400, detail="No hay datos para actualizar")
-    if 'dia_semana' in update_data and not (0 <= update_data['dia_semana'] <= 6): raise HTTPException(status_code=400, detail="dia_semana debe estar entre 0 y 6.")
-    for key, value in update_data.items(): setattr(db_regla, key, value)
-    try: db.commit(); db.refresh(db_regla)
-    except Exception as e: db.rollback(); traceback.print_exc(); raise HTTPException(status_code=500, detail=f"Error al actualizar regla: {e}")
+    if not update_data: 
+        raise HTTPException(status_code=400, detail="No hay datos para actualizar")
+    if 'dia_semana' in update_data and not (0 <= update_data['dia_semana'] <= 6): 
+        raise HTTPException(status_code=400, detail="dia_semana debe estar entre 0 y 6.")
+    for key, value in update_data.items(): 
+        setattr(db_regla, key, value)
+    try: 
+        db.commit(); db.refresh(db_regla)
+    except Exception as e: 
+        db.rollback(); traceback.print_exc(); 
+        raise HTTPException(status_code=500, detail=f"Error al actualizar regla: {e}")
     return db_regla
 
 @app.delete("/admin/horarios/reglas/{regla_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Admin: Horarios"])
 def delete_regla_horario(regla_id: int, user: AdminUser, db: DbSession):
     db_regla = db.get(models.ReglaHorario, regla_id)
-    if not db_regla: raise HTTPException(status_code=404, detail="Regla no encontrada")
+    if not db_regla: 
+        raise HTTPException(status_code=404, detail="Regla no encontrada")
     try:
         db.delete(db_regla); db.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-    except Exception as e: db.rollback(); traceback.print_exc(); raise HTTPException(status_code=500, detail=f"Error al eliminar regla: {e}")
+    except Exception as e: 
+        db.rollback(); traceback.print_exc(); 
+        raise HTTPException(status_code=500, detail=f"Error al eliminar regla: {e}")
 
 @app.post("/admin/horarios/excepciones", response_model=schemas.ExcepcionHorario, status_code=status.HTTP_201_CREATED, tags=["Admin: Horarios"])
 def create_excepcion_horario(excepcion: schemas.ExcepcionHorarioCreate, user: AdminUser, db: DbSession):
@@ -462,40 +570,52 @@ def create_excepcion_horario(excepcion: schemas.ExcepcionHorarioCreate, user: Ad
     try:
         db.add(db_excepcion); db.commit(); db.refresh(db_excepcion)
         return db_excepcion
-    except Exception as e: db.rollback(); traceback.print_exc(); raise HTTPException(status_code=500, detail=f"Error al crear excepción: {e}")
+    except Exception as e: 
+        db.rollback(); traceback.print_exc(); 
+        raise HTTPException(status_code=500, detail=f"Error al crear excepción: {e}")
 
 @app.get("/admin/horarios/excepciones", response_model=List[schemas.ExcepcionHorario], tags=["Admin: Horarios"])
 def get_excepciones_horario(user: AdminUser, db: DbSession, laboratorio_id: Optional[int] = None, fecha_desde: Optional[date] = None):
     query = db.query(models.ExcepcionHorario)
-    if laboratorio_id is not None: query = query.filter(models.ExcepcionHorario.laboratorio_id == laboratorio_id)
-    if fecha_desde: query = query.filter(models.ExcepcionHorario.fecha >= fecha_desde)
+    if laboratorio_id is not None: 
+        query = query.filter(models.ExcepcionHorario.laboratorio_id == laboratorio_id)
+    if fecha_desde: 
+        query = query.filter(models.ExcepcionHorario.fecha >= fecha_desde)
     return query.order_by(models.ExcepcionHorario.fecha, models.ExcepcionHorario.hora_inicio).all()
 
 @app.put("/admin/horarios/excepciones/{excepcion_id}", response_model=schemas.ExcepcionHorario, tags=["Admin: Horarios"])
 def update_excepcion_horario(excepcion_id: int, excepcion_update: schemas.ExcepcionHorarioUpdate, user: AdminUser, db: DbSession):
     db_excepcion = db.get(models.ExcepcionHorario, excepcion_id)
-    if not db_excepcion: raise HTTPException(status_code=404, detail="Excepción no encontrada")
+    if not db_excepcion: 
+        raise HTTPException(status_code=404, detail="Excepción no encontrada")
     update_data = excepcion_update.model_dump(exclude_unset=True)
-    if not update_data: raise HTTPException(status_code=400, detail="No hay datos para actualizar")
-    for key, value in update_data.items(): setattr(db_excepcion, key, value)
-    try: db.commit(); db.refresh(db_excepcion)
-    except Exception as e: db.rollback(); traceback.print_exc(); raise HTTPException(status_code=500, detail=f"Error al actualizar excepción: {e}")
+    if not update_data: 
+        raise HTTPException(status_code=400, detail="No hay datos para actualizar")
+    for key, value in update_data.items(): 
+        setattr(db_excepcion, key, value)
+    try: 
+        db.commit(); db.refresh(db_excepcion)
+    except Exception as e: 
+        db.rollback(); traceback.print_exc(); 
+        raise HTTPException(status_code=500, detail=f"Error al actualizar excepción: {e}")
     return db_excepcion
 
 @app.delete("/admin/horarios/excepciones/{excepcion_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Admin: Horarios"])
 def delete_excepcion_horario(excepcion_id: int, user: AdminUser, db: DbSession):
     db_excepcion = db.get(models.ExcepcionHorario, excepcion_id)
-    if not db_excepcion: raise HTTPException(status_code=404, detail="Excepción no encontrada")
+    if not db_excepcion: 
+        raise HTTPException(status_code=404, detail="Excepción no encontrada")
     try:
         db.delete(db_excepcion); db.commit()
         return Response(status_code=status.HTTP_204_NO_CONTENT)
-    except Exception as e: db.rollback(); traceback.print_exc(); raise HTTPException(status_code=500, detail=f"Error al eliminar excepción: {e}")
+    except Exception as e: 
+        db.rollback(); traceback.print_exc(); 
+        raise HTTPException(status_code=500, detail=f"Error al eliminar excepción: {e}")
 
 
 # ==============================================================================
 # --- ENDPOINT PARA OBTENER RESERVAS POR LABORATORIO ---
 # ==============================================================================
-# ... (get_reservas_por_lab_y_fecha remains the same) ...
 @app.get("/reservas/{lab_id}", response_model=List[schemas.Reserva], tags=["Reservas"])
 def get_reservas_por_lab_y_fecha(
     lab_id: int,
@@ -536,13 +656,13 @@ def get_reservas_por_lab_y_fecha(
 # ==============================================================================
 # --- ENDPOINT PARA CALCULAR HORARIO DISPONIBLE ---
 # ==============================================================================
-# ... (get_horario_laboratorio remains the same) ...
 @app.get("/laboratorios/{lab_id}/horario", response_model=Dict[date, List[schemas.SlotHorario]], tags=["Reservas"])
 def get_horario_laboratorio(
     lab_id: int, fecha_inicio: date, fecha_fin: date, user: CurrentUser, db: DbSession
 ):
     lab = db.get(models.Laboratorio, lab_id)
-    if not lab: raise HTTPException(status_code=404, detail="Laboratorio no encontrado")
+    if not lab: 
+        raise HTTPException(status_code=404, detail="Laboratorio no encontrado")
     reglas_generales = db.query(models.ReglaHorario).filter(models.ReglaHorario.laboratorio_id == None).all()
     reglas_especificas = db.query(models.ReglaHorario).filter(models.ReglaHorario.laboratorio_id == lab_id).all()
 
@@ -568,7 +688,8 @@ def get_horario_laboratorio(
     excepciones = db.query(models.ExcepcionHorario).filter(models.ExcepcionHorario.laboratorio_id.in_([lab_id, None]), models.ExcepcionHorario.fecha >= fecha_inicio, models.ExcepcionHorario.fecha <= fecha_fin).order_by(models.ExcepcionHorario.fecha, models.ExcepcionHorario.hora_inicio).all()
     excepciones_por_fecha: Dict[date, List[models.ExcepcionHorario]] = {}
     for ex in excepciones:
-        if ex.fecha not in excepciones_por_fecha: excepciones_por_fecha[ex.fecha] = []
+        if ex.fecha not in excepciones_por_fecha: 
+            excepciones_por_fecha[ex.fecha] = []
         excepciones_por_fecha[ex.fecha].append(ex)
 
     reservas_existentes = db.query(models.Reserva).filter(models.Reserva.laboratorio_id == lab_id, models.Reserva.estado != 'cancelada', models.Reserva.inicio < datetime.combine(fecha_fin + timedelta(days=1), time.min).replace(tzinfo=timezone.utc), models.Reserva.fin > datetime.combine(fecha_inicio, time.min).replace(tzinfo=timezone.utc)).all()
@@ -659,20 +780,28 @@ def get_horario_laboratorio(
 @app.post("/reservas", response_model=schemas.Reserva, status_code=status.HTTP_201_CREATED, tags=["Reservas"])
 def create_reserva(reserva: schemas.ReservaCreate, user: CurrentUser, db: DbSession):
     # --- Validaciones ---
-    if user.get("rol") not in ["admin", "docente"]: raise HTTPException(status_code=403, detail="Solo admins/docentes pueden crear reservas.")
+    if user.get("rol") not in ["admin", "docente"]: 
+        raise HTTPException(status_code=403, detail="Solo admins/docentes pueden crear reservas.")
     lab = labs_cache_main.get(reserva.laboratorio_id) or db.get(models.Laboratorio, reserva.laboratorio_id)
-    if not lab: raise HTTPException(status_code=404, detail=f"Laboratorio id {reserva.laboratorio_id} no encontrado.")
+    if not lab: 
+        raise HTTPException(status_code=404, detail=f"Laboratorio id {reserva.laboratorio_id} no encontrado.")
     res_user = db.get(models.Usuario, reserva.usuario_id) # Get the user for whom the reservation is being made
-    if not res_user: raise HTTPException(status_code=404, detail=f"Usuario id {reserva.usuario_id} no encontrado.")
+    if not res_user: 
+        raise HTTPException(status_code=404, detail=f"Usuario id {reserva.usuario_id} no encontrado.")
 
     # Ensure datetimes from request are timezone-aware (UTC)
     inicio = reserva.inicio
-    if inicio.tzinfo is None: inicio = inicio.replace(tzinfo=timezone.utc)
-    else: inicio = inicio.astimezone(timezone.utc)
+    if inicio.tzinfo is None: 
+        inicio = inicio.replace(tzinfo=timezone.utc)
+    else: 
+        inicio = inicio.astimezone(timezone.utc)
     fin = reserva.fin
-    if fin.tzinfo is None: fin = fin.replace(tzinfo=timezone.utc)
-    else: fin = fin.astimezone(timezone.utc)
-    if inicio >= fin: raise HTTPException(status_code=400, detail="Inicio debe ser anterior a fin.")
+    if fin.tzinfo is None: 
+        fin = fin.replace(tzinfo=timezone.utc)
+    else: 
+        fin = fin.astimezone(timezone.utc)
+    if inicio >= fin: 
+        raise HTTPException(status_code=400, detail="Inicio debe ser anterior a fin.")
 
     # --- Validación de Horario ---
     try:
@@ -686,8 +815,11 @@ def create_reserva(reserva: schemas.ReservaCreate, user: CurrentUser, db: DbSess
                 slot_valido_encontrado = True; break
         if not slot_valido_encontrado:
                 raise HTTPException(status_code=409, detail="El horario solicitado no está disponible o no coincide con un slot válido y libre.")
-    except HTTPException as http_ex: raise http_ex
-    except Exception as val_ex: traceback.print_exc(); raise HTTPException(status_code=500, detail=f"Error al validar disponibilidad: {val_ex}")
+    except HTTPException as http_ex: 
+        raise http_ex
+    except Exception as val_ex: 
+        traceback.print_exc(); 
+        raise HTTPException(status_code=500, detail=f"Error al validar disponibilidad: {val_ex}")
 
     # --- Verificar solapamiento ---
     overlapping = db.query(models.Reserva)\
@@ -695,7 +827,8 @@ def create_reserva(reserva: schemas.ReservaCreate, user: CurrentUser, db: DbSess
                             models.Reserva.estado != "cancelada",
                             models.Reserva.inicio < fin,
                             models.Reserva.fin > inicio).first()
-    if overlapping: raise HTTPException(status_code=409, detail=f"Conflicto de horario detectado (ID existente: {overlapping.id}).")
+    if overlapping: 
+        raise HTTPException(status_code=409, detail=f"Conflicto de horario detectado (ID existente: {overlapping.id}).")
 
     # --- Crear Reserva y Evento Calendar ---
     new_reserva = models.Reserva(usuario_id=reserva.usuario_id, laboratorio_id=reserva.laboratorio_id, inicio=inicio, fin=fin, estado="activa", google_event_id=None)
@@ -727,8 +860,10 @@ def create_reserva(reserva: schemas.ReservaCreate, user: CurrentUser, db: DbSess
             if google_event_id and hasattr(new_reserva, 'google_event_id'):
                 new_reserva.google_event_id = google_event_id; db.commit(); db.refresh(new_reserva)
                 print(f"INFO: ID de evento de Google ({google_event_id}) asociado a reserva {new_reserva.id}")
-            else: print(f"WARN: No se pudo obtener/guardar el ID de evento de Google para reserva {new_reserva.id}")
-        except Exception as calendar_e: print(f"ERROR: Falló la creación/actualización del evento en Google Calendar para reserva {new_reserva.id}: {calendar_e}")
+            else: 
+                print(f"WARN: No se pudo obtener/guardar el ID de evento de Google para reserva {new_reserva.id}")
+        except Exception as calendar_e: 
+            print(f"ERROR: Falló la creación/actualización del evento en Google Calendar para reserva {new_reserva.id}: {calendar_e}")
 
         # Ensure returned datetimes are UTC aware
         new_reserva.inicio = new_reserva.inicio.astimezone(timezone.utc)
@@ -739,13 +874,15 @@ def create_reserva(reserva: schemas.ReservaCreate, user: CurrentUser, db: DbSess
         raise HTTPException(status_code=400, detail=f"Error al crear reserva local: {e}")
 
 # --- MODIFIED: cancel_reserva ---
-# (No changes needed here for attendees, but ensure calendar_service.delete uses the ID)
 @app.put("/reservas/{reserva_id}/cancelar", response_model=schemas.Reserva, tags=["Reservas"])
 def cancel_reserva(reserva_id: int, user: CurrentUser, db: DbSession):
     reserva = db.get(models.Reserva, reserva_id)
-    if not reserva: raise HTTPException(status_code=404, detail="Reserva no encontrada")
-    if user["rol"] != 'admin' and reserva.usuario_id != user["id"]: raise HTTPException(status_code=403, detail="No autorizado")
-    if reserva.estado == "cancelada": raise HTTPException(status_code=400, detail="Reserva ya cancelada.")
+    if not reserva: 
+        raise HTTPException(status_code=404, detail="Reserva no encontrada")
+    if user["rol"] != 'admin' and reserva.usuario_id != user["id"]: 
+        raise HTTPException(status_code=403, detail="No autorizado")
+    if reserva.estado == "cancelada": 
+        raise HTTPException(status_code=400, detail="Reserva ya cancelada.")
     google_event_id_to_delete = getattr(reserva, 'google_event_id', None)
     reserva.estado = "cancelada"
     try:
@@ -759,9 +896,12 @@ def cancel_reserva(reserva_id: int, user: CurrentUser, db: DbSession):
                 if deleted and hasattr(reserva, 'google_event_id'):
                     reserva.google_event_id = None; db.commit(); db.refresh(reserva) # Clear the ID from DB
                     print(f"INFO: ID de evento de Google limpiado para reserva {reserva_id}.")
-                elif not deleted: print(f"WARN: No se pudo eliminar el evento de Google {google_event_id_to_delete} (ID podría ser inválido o ya eliminado).")
-            except Exception as calendar_e: print(f"ERROR: Falló la eliminación del evento en Google Calendar para reserva {reserva_id}: {calendar_e}")
-        else: print(f"INFO: No hay ID de evento de Google asociado a reserva {reserva_id} para eliminar.")
+                elif not deleted: 
+                    print(f"WARN: No se pudo eliminar el evento de Google {google_event_id_to_delete} (ID podría ser inválido o ya eliminado).")
+            except Exception as calendar_e: 
+                print(f"ERROR: Falló la eliminación del evento en Google Calendar para reserva {reserva_id}: {calendar_e}")
+        else: 
+            print(f"INFO: No hay ID de evento de Google asociado a reserva {reserva_id} para eliminar.")
 
         # Ensure returned datetimes are UTC aware
         reserva.inicio = reserva.inicio.astimezone(timezone.utc)
@@ -773,7 +913,6 @@ def cancel_reserva(reserva_id: int, user: CurrentUser, db: DbSession):
 
 
 # --- Préstamos ---
-# ... (Loan endpoints remain the same) ...
 @app.get("/prestamos/mis-solicitudes", response_model=List[schemas.Prestamo], tags=["Préstamos"])
 def get_mis_prestamos(user: CurrentUser, db: DbSession):
     prestamos = db.query(models.Prestamo).options(joinedload(models.Prestamo.recurso).joinedload(models.Recurso.laboratorio), joinedload(models.Prestamo.usuario)).filter(models.Prestamo.usuario_id == user["id"]).order_by(models.Prestamo.id.desc()).all()
@@ -787,17 +926,22 @@ def get_mis_prestamos(user: CurrentUser, db: DbSession):
 @app.post("/prestamos", response_model=schemas.Prestamo, status_code=status.HTTP_201_CREATED, tags=["Préstamos"])
 def create_prestamo(prestamo: schemas.PrestamoCreate, user: CurrentUser, db: DbSession):
     recurso = db.get(models.Recurso, prestamo.recurso_id)
-    if not recurso: raise HTTPException(status_code=404, detail=f"Recurso id {prestamo.recurso_id} no encontrado.")
-    if prestamo.usuario_id != user["id"] and user["rol"] != "admin": raise HTTPException(status_code=403, detail="No autorizado para crear préstamo para otro usuario.")
+    if not recurso: 
+        raise HTTPException(status_code=404, detail=f"Recurso id {prestamo.recurso_id} no encontrado.")
+    if prestamo.usuario_id != user["id"] and user["rol"] != "admin": 
+        raise HTTPException(status_code=403, detail="No autorizado para crear préstamo para otro usuario.")
     sol_user = db.get(models.Usuario, prestamo.usuario_id)
-    if not sol_user: raise HTTPException(status_code=404, detail="Usuario id no encontrado.")
+    if not sol_user: 
+        raise HTTPException(status_code=404, detail="Usuario id no encontrado.")
 
     # Ensure UTC aware datetimes
     inicio = prestamo.inicio.astimezone(timezone.utc)
     fin = prestamo.fin.astimezone(timezone.utc)
 
-    if inicio >= fin: raise HTTPException(status_code=400, detail="Inicio debe ser anterior a fin.")
-    if prestamo.cantidad < 1: raise HTTPException(status_code=400, detail="Cantidad debe ser >= 1.")
+    if inicio >= fin: 
+        raise HTTPException(status_code=400, detail="Inicio debe ser anterior a fin.")
+    if prestamo.cantidad < 1: 
+        raise HTTPException(status_code=400, detail="Cantidad debe ser >= 1.")
     new_prestamo = models.Prestamo(
         recurso_id=prestamo.recurso_id, usuario_id=prestamo.usuario_id, solicitante=sol_user.nombre,
         cantidad=prestamo.cantidad, inicio=inicio, fin=fin, comentario=prestamo.comentario, estado="pendiente"
@@ -827,15 +971,19 @@ def get_todos_los_prestamos(user: AdminUser, db: DbSession):
 @app.put("/admin/prestamos/{prestamo_id}/estado", response_model=schemas.Prestamo, tags=["Préstamos (Admin)"])
 def update_prestamo_estado(prestamo_id: int, nuevo_estado: str, user: AdminUser, db: DbSession):
     prestamo = db.query(models.Prestamo).options(joinedload(models.Prestamo.recurso)).filter(models.Prestamo.id == prestamo_id).first()
-    if not prestamo: raise HTTPException(status_code=404, detail="Préstamo no encontrado")
+    if not prestamo: 
+        raise HTTPException(status_code=404, detail="Préstamo no encontrado")
     allowed_states = ["pendiente", "aprobado", "rechazado", "entregado", "devuelto"]
-    if nuevo_estado not in allowed_states: raise HTTPException(status_code=400, detail="Estado no válido.")
+    if nuevo_estado not in allowed_states: 
+        raise HTTPException(status_code=400, detail="Estado no válido.")
     old_status = prestamo.estado
     prestamo.estado = nuevo_estado
     recurso_updated = False
     if prestamo.recurso:
-        if old_status != 'devuelto' and nuevo_estado == "devuelto": prestamo.recurso.estado = "disponible"; recurso_updated = True
-        elif old_status != 'entregado' and nuevo_estado == "entregado": prestamo.recurso.estado = "prestado"; recurso_updated = True
+        if old_status != 'devuelto' and nuevo_estado == "devuelto": 
+            prestamo.recurso.estado = "disponible"; recurso_updated = True
+        elif old_status != 'entregado' and nuevo_estado == "entregado": 
+            prestamo.recurso.estado = "prestado"; recurso_updated = True
     try:
         db.commit(); db.refresh(prestamo); db.refresh(prestamo.recurso); db.refresh(prestamo.usuario)
         print(f"INFO: Préstamo {prestamo_id} actualizado a '{nuevo_estado}'. Estado recurso: '{prestamo.recurso.estado if prestamo.recurso else 'N/A'}'")
@@ -847,3 +995,13 @@ def update_prestamo_estado(prestamo_id: int, nuevo_estado: str, user: AdminUser,
     except Exception as e:
         db.rollback(); print(f"ERROR updating loan state {prestamo_id}: {e}"); traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error al actualizar estado del préstamo: {e}")
+
+# Health check endpoint for Railway
+@app.get("/")
+async def root():
+    return {"message": "API del Gestor de Laboratorios funcionando correctamente", "status": "online"}
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc)}
