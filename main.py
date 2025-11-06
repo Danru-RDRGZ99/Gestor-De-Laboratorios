@@ -5,6 +5,7 @@ from typing import List, Annotated, Optional, Dict, Tuple
 from datetime import datetime, timedelta, timezone, date, time
 import traceback
 import os
+import base64
 
 # --- Security and Authentication Imports ---
 from fastapi.security import OAuth2PasswordRequestForm
@@ -124,15 +125,23 @@ async def startup_event():
 # --- AUTHENTICATION ENDPOINTS ---
 # ==============================================================================
 
-# --- CAPTCHA Generation Endpoint ---
-@app.get("/captcha", tags=["Auth"])
+@app.get("/captcha", tags=["Auth"]) # <--- NO CAMBIA EL NOMBRE DEL ENDPOINT
 async def get_captcha(request: Request):
     image_captcha = ImageCaptcha()
     captcha_text = ''.join(random.choices(string.ascii_uppercase + string.digits, k=5))
     request.session["captcha_text"] = captcha_text
     image_stream = image_captcha.generate(captcha_text)
     image_bytes = image_stream.getvalue()
-    return Response(content=image_bytes, media_type="image/png")
+    
+    # --- INICIO DE LA CORRECCIÓN ---
+    # 1. Codifica los bytes de la imagen a base64
+    image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+    
+    # 2. Prepara el string completo que Flet necesita (data:image/png;base64,...)
+    b64_string = f"data:image/png;base64,{image_b64}"
+
+    # 3. Devuelve un JSON (diccionario) en lugar de una Response de imagen
+    return {"image_data": b64_string}
 
 # --- Standard Login Endpoint (Username/Password + CAPTCHA) ---
 @app.post("/token", response_model=schemas.Token, tags=["Auth"])
