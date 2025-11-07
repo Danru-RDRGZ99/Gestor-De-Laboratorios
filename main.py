@@ -620,6 +620,33 @@ def delete_excepcion_horario(excepcion_id: int, user: AdminUser, db: DbSession):
 
 
 # ==============================================================================
+# --- ENDPOINT PARA OBTENER RESERVAS PROPIAS (¡NUEVO!) ---
+# ==============================================================================
+
+# ¡IMPORTANTE! Este endpoint debe definirse ANTES de "/reservas/{lab_id}"
+# para evitar conflictos de rutas (donde "mis-solicitudes" se confunde con un lab_id).
+
+@app.get("/reservas/mis-solicitudes", response_model=List[schemas.Reserva], tags=["Reservas"])
+def get_mis_reservas(user: CurrentUser, db: DbSession):
+    """
+    Obtiene todas las reservas (no canceladas) del usuario autenticado.
+    """
+    reservas = db.query(models.Reserva).options(
+        joinedload(models.Reserva.usuario),
+        joinedload(models.Reserva.laboratorio).joinedload(models.Laboratorio.plantel) # Cargar también el lab y plantel
+    ).filter(
+        models.Reserva.usuario_id == user["id"],
+        models.Reserva.estado != "cancelada"
+    ).order_by(models.Reserva.inicio.desc()).all()
+    
+    # Asegurar que las fechas de respuesta estén en UTC
+    for r in reservas:
+        if r.inicio: r.inicio = r.inicio.astimezone(timezone.utc)
+        if r.fin: r.fin = r.fin.astimezone(timezone.utc)
+        
+    return reservas
+
+# ==============================================================================
 # --- ENDPOINT PARA OBTENER RESERVAS POR LABORATORIO ---
 # ==============================================================================
 @app.get("/reservas/{lab_id}", response_model=List[schemas.Reserva], tags=["Reservas"])
@@ -705,12 +732,12 @@ def get_horario_laboratorio(
         try:
             inicio_dt = r.inicio
             if isinstance(inicio_dt, datetime):
-                 naive_inicio = inicio_dt.replace(tzinfo=None)
-                 reservas_map[(naive_inicio.date(), naive_inicio.time())] = r
+                naive_inicio = inicio_dt.replace(tzinfo=None)
+                reservas_map[(naive_inicio.date(), naive_inicio.time())] = r
             else:
-                 print(f"WARN: Reserva ID {r.id} has invalid inicio type: {type(inicio_dt)}")
+                print(f"WARN: Reserva ID {r.id} has invalid inicio type: {type(inicio_dt)}")
         except Exception as date_parse_err:
-             print(f"ERROR parsing reserva inicio date for ID {r.id}: {date_parse_err}")
+            print(f"ERROR parsing reserva inicio date for ID {r.id}: {date_parse_err}")
 
     horario_final: Dict[date, List[schemas.SlotHorario]] = {}
     current_date = fecha_inicio
@@ -752,24 +779,24 @@ def get_horario_laboratorio(
                     if (current_date, s_time) in reservas_map:
                             slot_tipo = "reservado"
                     if slot_tipo == 'disponible':
-                         for ex in excepciones_hoy:
-                             if ex.hora_inicio and ex.hora_fin:
-                                 if not isinstance(ex.hora_inicio, time) or not isinstance(ex.hora_fin, time):
-                                     print(f"WARN: Invalid time objects in exception ID {ex.id} for date {current_date}. Skipping check.")
-                                     continue
-                                 ex_inicio_naive = datetime.combine(current_date, ex.hora_inicio)
-                                 ex_fin_naive = datetime.combine(current_date, ex.hora_fin)
-                                 if slot_inicio_dt_naive >= ex_inicio_naive and slot_fin_dt_naive <= ex_fin_naive:
-                                     if not ex.es_habilitado:
-                                         slot_tipo = ex.tipo or "mantenimiento"
-                                         break
+                        for ex in excepciones_hoy:
+                            if ex.hora_inicio and ex.hora_fin:
+                                if not isinstance(ex.hora_inicio, time) or not isinstance(ex.hora_fin, time):
+                                    print(f"WARN: Invalid time objects in exception ID {ex.id} for date {current_date}. Skipping check.")
+                                    continue
+                                ex_inicio_naive = datetime.combine(current_date, ex.hora_inicio)
+                                ex_fin_naive = datetime.combine(current_date, ex.hora_fin)
+                                if slot_inicio_dt_naive >= ex_inicio_naive and slot_fin_dt_naive <= ex_fin_naive:
+                                    if not ex.es_habilitado:
+                                        slot_tipo = ex.tipo or "mantenimiento"
+                                        break
 
                 try:
                     slot_inicio_dt_utc = slot_inicio_dt_naive.replace(tzinfo=timezone.utc)
                     slot_fin_dt_utc = slot_fin_dt_naive.replace(tzinfo=timezone.utc)
                     slots_del_dia.append(schemas.SlotHorario(inicio=slot_inicio_dt_utc, fin=slot_fin_dt_utc, tipo=slot_tipo))
                 except Exception as dt_err:
-                     print(f"ERROR converting datetimes for rule ID {regla.id} on {current_date}: {dt_err}")
+                    print(f"ERROR converting datetimes for rule ID {regla.id} on {current_date}: {dt_err}")
 
             slots_del_dia.sort(key=lambda x: x.inicio)
             horario_final[current_date] = slots_del_dia
