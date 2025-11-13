@@ -6,7 +6,13 @@ from datetime import datetime, timedelta, timezone, date, time
 import traceback
 import os
 import base64
-
+# Load .env into environment for local development and containers that include the file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    # python-dotenv not installed or load failed; environment variables may be provided by the host
+    pass
 # --- Security and Authentication Imports ---
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
@@ -28,18 +34,9 @@ from starlette.responses import HTMLResponse, RedirectResponse, JSONResponse
 import secrets
 
 # --- Project-specific Core Imports ---
-from core import auth_service, models, security, calendar_service, google_auth # Ensure calendar_service is imported
+from core import auth_service, models, security, calendar_service, google_auth
 from core.db import SessionLocal
 import pydantic_models as schemas
-
-# --- Helper for Random Password ---
-def generate_random_password(length=16):
-    alphabet = string.ascii_letters + string.digits + string.punctuation
-    return ''.join(secrets.choice(alphabet) for _ in range(length))
-# --- End Helper ---
-
-# --- Load Configuration from environment variables (Railway) ---
-# Railway proporciona las variables de entorno directamente
 # --- End Configuration ---
 
 # --- Database Initialization ---
@@ -140,24 +137,8 @@ async def get_captcha(request: Request):
     # 2. Devuelve SÓLO el string base64 puro
     return {"image_data": image_b64}
     # --- FIN DE LA CORRECCIÓN ---
-# --- Standard Login Endpoint (Username/Password + CAPTCHA) ---
-@app.post("/token", response_model=schemas.Token, tags=["Auth"])
-async def login_for_access_token(request: Request, login_data: LoginRequest, db: DbSession):
-    captcha_esperado = request.session.get("captcha_text")
-    if "captcha_text" in request.session: del request.session["captcha_text"]
-    if not captcha_esperado or login_data.captcha.upper() != captcha_esperado.upper():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El texto del CAPTCHA es incorrecto.")
-    user_dict = auth_service.login(username_or_email=login_data.username, password=login_data.password)
-    if not user_dict:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario o contraseña incorrectos", headers={"WWW-Authenticate": "Bearer"})
-    expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
-    token_data = {"sub": user_dict["user"], "rol": user_dict["rol"], "id": user_dict["id"]}
-    access_token = security.create_access_token(data=token_data, expires_delta=expires)
-    user_obj = db.get(models.Usuario, user_dict["id"])
-    if not user_obj: raise HTTPException(status_code=404, detail="Usuario no encontrado post-login.")
-    return {"access_token": access_token, "token_type": "bearer", "user": user_obj}
 
-# --- HTML helper page to start Google Sign-In (client-side token display) ---
+
 @app.get("/auth/google", response_class=HTMLResponse, tags=["Auth"])
 async def auth_google_page():
         """Serve a small HTML page that uses Google Identity Services to obtain an ID token
@@ -167,7 +148,7 @@ async def auth_google_page():
         if not google_client_id:
                 return HTMLResponse("<h3>GOOGLE_CLIENT_ID not configured on the server.</h3>", status_code=500)
 
-        html = f"""
+        html = """
         <!doctype html>
         <html>
             <head>
@@ -180,7 +161,7 @@ async def auth_google_page():
                 <h2>Iniciar sesión con Google</h2>
                 <p>Haz click en el botón de Google para iniciar sesión. Tras completar el flujo, copia el <strong>ID Token</strong> mostrado abajo y pégalo en la aplicación.</p>
                 <div id="g_id_onload"
-                         data-client_id="{google_client_id}"
+                         data-client_id="{CLIENT_ID_PLACEHOLDER}"
                          data-callback="handleCredentialResponse"
                          data-auto_prompt="false">
                 </div>
@@ -200,42 +181,67 @@ async def auth_google_page():
         </html>
         """
 
-        return HTMLResponse(content=html)
+        html = html.replace('{CLIENT_ID_PLACEHOLDER}', google_client_id)
 
-# --- ¡ENDPOINT DE LOGIN CON GOOGLE MEJORADO! ---
+        return HTMLResponse(content=html)
+# --- Standard Login Endpoint (Username/Password + CAPTCHA) ---
+@app.post("/token", response_model=schemas.Token, tags=["Auth"])
+async def login_for_access_token(request: Request, login_data: LoginRequest, db: DbSession):
+    captcha_esperado = request.session.get("captcha_text")
+    if "captcha_text" in request.session: del request.session["captcha_text"]
+    if not captcha_esperado or login_data.captcha.upper() != captcha_esperado.upper():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="El texto del CAPTCHA es incorrecto.")
+    user_dict = auth_service.login(username_or_email=login_data.username, password=login_data.password)
+    if not user_dict:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario o contraseña incorrectos", headers={"WWW-Authenticate": "Bearer"})
+    expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
+    token_data = {"sub": user_dict["user"], "rol": user_dict["rol"], "id": user_dict["id"]}
+    access_token = security.create_access_token(data=token_data, expires_delta=expires)
+    user_obj = db.get(models.Usuario, user_dict["id"])
+    if not user_obj: raise HTTPException(status_code=404, detail="Usuario no encontrado post-login.")
+    return {"access_token": access_token, "token_type": "bearer", "user": user_obj}
+
+# --- ¡ENDPOINT DE LOGIN CON GOOGLE! ---
 @app.post("/auth/google-token", response_model=schemas.Token, tags=["Auth"])
 async def login_with_google_token(token_data: GoogleToken, db: DbSession):
-    """
-    Google OAuth2 authentication endpoint.
-    
-    Expects: {"idToken": "<google_id_token_string>"}
-    Returns: {"access_token": "...", "token_type": "bearer", "user": {...}}
-    """
     try:
-        # Use the improved Google auth service
-        success, result, message = google_auth.authenticate_with_google(token_data.id_token)
-        
-        if not success:
-            print(f"ERROR: Google authentication failed: {message}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Google authentication failed: {message}",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-        
-        print(f"SUCCESS: User {result['user']['user']} authenticated via Google")
-        return result
-        
-    except HTTPException:
-        raise
+        google_client_id = os.getenv("GOOGLE_CLIENT_ID")
+        if not google_client_id: 
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="GOOGLE_CLIENT_ID no configurado")
+        id_info = id_token.verify_oauth2_token(token_data.id_token, request=None, audience=google_client_id)
+        user_email = id_info.get('email').lower()
+        user_name = id_info.get('name') or id_info.get('given_name') or user_email.split('@')[0]
+        if not user_email: 
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="No se pudo obtener el email del token de Google.")
+        print(f"DEBUG: Google Token verificado para: {user_email}")
+        db_user = db.query(models.Usuario).filter(models.Usuario.correo == user_email).first()
+        if not db_user:
+            print(f"INFO: Creando nuevo usuario para {user_email} desde Google")
+            random_pass = generate_random_password()
+            ok, result = auth_service.create_user(nombre=user_name, correo=user_email, user=user_email, password=random_pass, rol='estudiante')
+            if not ok:
+                if "El usuario ya existe" in str(result):
+                    user_username = f"{user_email.split('@')[0]}_{secrets.token_hex(4)}"
+                    ok, result = auth_service.create_user(nombre=user_name, correo=user_email, user=user_username, password=random_pass, rol='estudiante')
+                    if not ok: 
+                        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al crear usuario: {result}")
+                else: 
+                    raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error al crear usuario: {result}")
+            db_user = db.get(models.Usuario, result["id"])
+            if not db_user: 
+                raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, detail="Usuario creado pero no se pudo recuperar.")
+        else: 
+            print(f"INFO: Usuario encontrado para {user_email} (ID: {db_user.id})")
+        expires = timedelta(minutes=security.ACCESS_TOKEN_EXPIRE_MINUTES)
+        token_data_payload = {"sub": db_user.user, "rol": db_user.rol, "id": db_user.id}
+        access_token = security.create_access_token(data=token_data_payload, expires_delta=expires)
+        return {"access_token": access_token, "token_type": "bearer", "user": db_user}
+    except GoogleAuthError as e:
+        print(f"ERROR: Token de Google inválido: {e}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Token de Google inválido o expirado: {e}", headers={"WWW-Authenticate": "Bearer"})
     except Exception as e:
-        print(f"ERROR: Unexpected error in Google auth endpoint: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
-        )
+        print(f"ERROR: Excepción en login de Google: {e}"); traceback.print_exc()
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error interno del servidor: {e}")
 
 
 # --- User Registration Endpoint ---
