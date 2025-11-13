@@ -157,6 +157,51 @@ async def login_for_access_token(request: Request, login_data: LoginRequest, db:
     if not user_obj: raise HTTPException(status_code=404, detail="Usuario no encontrado post-login.")
     return {"access_token": access_token, "token_type": "bearer", "user": user_obj}
 
+# --- HTML helper page to start Google Sign-In (client-side token display) ---
+@app.get("/auth/google", response_class=HTMLResponse, tags=["Auth"])
+async def auth_google_page():
+        """Serve a small HTML page that uses Google Identity Services to obtain an ID token
+        and display it so the user can copy/paste it into the desktop app.
+        """
+        google_client_id = os.getenv("GOOGLE_CLIENT_ID")
+        if not google_client_id:
+                return HTMLResponse("<h3>GOOGLE_CLIENT_ID not configured on the server.</h3>", status_code=500)
+
+        html = f"""
+        <!doctype html>
+        <html>
+            <head>
+                <meta charset="utf-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>Google Sign-In</title>
+                <script src="https://accounts.google.com/gsi/client" async defer></script>
+            </head>
+            <body style="font-family:Arial,Helvetica,sans-serif;padding:20px;">
+                <h2>Iniciar sesión con Google</h2>
+                <p>Haz click en el botón de Google para iniciar sesión. Tras completar el flujo, copia el <strong>ID Token</strong> mostrado abajo y pégalo en la aplicación.</p>
+                <div id="g_id_onload"
+                         data-client_id="{google_client_id}"
+                         data-callback="handleCredentialResponse"
+                         data-auto_prompt="false">
+                </div>
+                <div class="g_id_signin" data-type="standard"></div>
+
+                <h3>ID Token (copiar/pegar)</h3>
+                <textarea id="idtoken" rows="6" cols="80" style="width:100%"></textarea>
+                <p style="margin-top:12px;color:#666">Si el botón no aparece, revisa la consola del navegador o prueba con otro navegador.</p>
+
+                <script>
+                    function handleCredentialResponse(response) {
+                        // response.credential contiene el ID token
+                        document.getElementById('idtoken').value = response.credential;
+                    }
+                </script>
+            </body>
+        </html>
+        """
+
+        return HTMLResponse(content=html)
+
 # --- ¡ENDPOINT DE LOGIN CON GOOGLE MEJORADO! ---
 @app.post("/auth/google-token", response_model=schemas.Token, tags=["Auth"])
 async def login_with_google_token(token_data: GoogleToken, db: DbSession):
